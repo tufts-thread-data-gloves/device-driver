@@ -151,7 +151,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BluetoothManager.cpp" />
+    <ClCompile Include="GestureRecognizer.cpp" />
     <ClCompile Include="ThreadDataGlovesDeviceDriver.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="BluetoothManager.h" />
+    <ClInclude Include="GestureRecognizer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
