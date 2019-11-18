@@ -23,10 +23,14 @@ struct ProcListeners {
 	string procName;
 } typedef ProcListeners;
 
-// Thread function for listening to gestures
-void gestureListener(GestureRecognizer *gestureRecognizer);
+enum RequestCodes {
+	HI=0, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
+};
 
+/******  Function Declarations  *******/
+void gestureListener(GestureRecognizer *gestureRecognizer);
 int processRequest(SOCKET i, string request, BluetoothManager *b);
+void calibrate(BluetoothManager* b, CalibrationInfo &result);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
 vector<ProcListeners> listeners;
@@ -201,5 +205,40 @@ void gestureListener(GestureRecognizer *gestureRecognizer) {
 } 
 
 int processRequest(SOCKET i, string request, BluetoothManager* b) {
-	// TODO
+	const char* requestBytes = request.c_str();
+	switch (requestBytes[0]) {
+	//TODO: handle requests
+	case HI: {
+
+		break;
+	}
+	case BYE: {
+
+		break;
+	}
+	case BATTERY_LIFE: {
+
+		break;
+	}
+	case START_CALIBRATION: {
+
+		break;
+	}
+	case END_CALIBRATION: {
+
+		break;
+	}
+	case USE_SAVED_CALIBRATION_DATA: {
+
+		break;
+	}
+	case IS_CALIBRATED: {
+		break;
+	}
+	}
+}
+
+void calibrate(BluetoothManager* b, CalibrationInfo& result) {
+	// Called in thread
+	// TODO: run b->listen() until some notification from main, and then store max and min in result
 }
