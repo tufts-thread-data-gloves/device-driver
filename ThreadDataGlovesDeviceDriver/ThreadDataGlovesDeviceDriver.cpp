@@ -11,17 +11,23 @@
 #include <string>
 #include <atlstr.h>
 #include <WinSock2.h>
+#include <codecvt>
+#include <locale>
 
 #define PORT 10500
 #define BUFFER_SIZE 1000
+const int ERROR_RET = -1;
+const int SUCCESS_RET = 1;
+const wstring PIPE_DIR = L"\\data\\thread_data_gloves\\";
+const string S_PIPE_DIR = "\\data\\thread_data_gloves\\";
 
 using namespace std;
 
-struct ProcListeners {
+struct ProcListener {
 	string namedPipePath;
 	HANDLE namedPipe;
 	string procName;
-} typedef ProcListeners;
+} typedef ProcListener;
 
 enum RequestCodes {
 	HI=0, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
@@ -30,10 +36,12 @@ enum RequestCodes {
 /******  Function Declarations  *******/
 void gestureListener(GestureRecognizer *gestureRecognizer);
 int processRequest(SOCKET i, string request, BluetoothManager *b);
+ProcListener *newNamedPipe(string processName);
+int sendCodeResponse(SOCKET i, char code, string response);
 void calibrate(BluetoothManager* b, CalibrationInfo &result);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
-vector<ProcListeners> listeners;
+vector<ProcListener> listeners;
 
 int main()
 {
@@ -194,11 +202,10 @@ void gestureListener(GestureRecognizer *gestureRecognizer) {
 		
 
 		// received gesture, now send over named pipes
-		for (unsigned i = 0; i < listeners.size(); i++) {
-			ProcListeners l = listeners.at(i);
-			if (l.namedPipe != INVALID_HANDLE_VALUE) {
+		for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
+			if ((*it).namedPipe != INVALID_HANDLE_VALUE) {
 				DWORD bytesWritten;
-				WriteFile(l.namedPipe, buffer, bufSize, &bytesWritten, NULL);
+				WriteFile((*it).namedPipe, buffer, bufSize, &bytesWritten, NULL);
 			}
 		}
 	}
@@ -209,33 +216,91 @@ int processRequest(SOCKET i, string request, BluetoothManager* b) {
 	switch (requestBytes[0]) {
 	//TODO: handle requests
 	case HI: {
-
+		// create new named pipe for given process and return success to client
+		ProcListener* l= newNamedPipe(request);
+		if (l == NULL) {
+			// return failure to client and disconnect
+			sendCodeResponse(i, 0, "");
+			return ERROR_RET;
+		}
+		// send success to client
+		if (sendCodeResponse(i, 1, l->namedPipePath) == ERROR_RET) {
+			return ERROR_RET;
+		}
+		else {
+			// add proc listener to listenerlist, and return sucess
+			listeners.push_back(*l);
+			return SUCCESS_RET;
+		}
 		break;
 	}
 	case BYE: {
-
+		// close named pipe for process
 		break;
 	}
 	case BATTERY_LIFE: {
-
+		// no-op
 		break;
 	}
 	case START_CALIBRATION: {
-
+		//
 		break;
 	}
 	case END_CALIBRATION: {
-
+		//
 		break;
 	}
 	case USE_SAVED_CALIBRATION_DATA: {
-
+		// 
 		break;
 	}
 	case IS_CALIBRATED: {
 		break;
 	}
 	}
+}
+
+ProcListener *newNamedPipe(string processName) {
+	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
+		if ((*it).procName == processName) {
+			return NULL;
+		}
+	}
+
+	// no match found, make new handle
+	LPCWSTR pipeName;
+	wstring procName = wstring_convert<codecvt_utf8<wchar_t>>().from_bytes(processName);
+	wstring wName = PIPE_DIR + procName;
+	pipeName = wName.c_str();
+	HANDLE namedPipe = CreateNamedPipe(pipeName, PIPE_ACCESS_OUTBOUND, PIPE_TYPE_BYTE, 1, BUFFER_SIZE, BUFFER_SIZE, 0, NULL);
+	if (namedPipe == INVALID_HANDLE_VALUE) {
+		return NULL;
+	}
+	ProcListener* l = (ProcListener *)malloc(sizeof(ProcListener));
+	l->namedPipe = namedPipe;
+	l->namedPipePath = S_PIPE_DIR + processName;
+	l->procName = processName;
+
+	return l;
+}
+
+int sendCodeResponse(SOCKET i, char code, string response) {
+	// construct payload
+	char buf[BUFFER_SIZE];
+	memset(buf, 0, BUFFER_SIZE);
+	buf[0] = code;
+	if ((int)response.length() > BUFFER_SIZE - 2) {
+		// bad response
+		return ERROR_RET;
+	}
+	strncpy(&buf[1], response.c_str(), response.length());
+	buf[response.length() + 1] = '\n';
+
+	// send payload over socket
+	if (send(i, buf, response.length() + 2, 0) == SOCKET_ERROR) {
+		return ERROR_RET;
+	}
+	return SUCCESS_RET;
 }
 
 void calibrate(BluetoothManager* b, CalibrationInfo& result) {
