@@ -27,6 +27,7 @@ struct ProcListener {
 	string namedPipePath;
 	HANDLE namedPipe;
 	string procName;
+	SOCKET socket;
 } typedef ProcListener;
 
 enum RequestCodes {
@@ -169,7 +170,7 @@ int main()
 								// end of a request
 								string buf(buffer);
 								string request = buffers[i] + buf;
-								if (processRequest(i, request, &bluetoothMngr) < 0) {
+								if (processRequest(i, request, &bluetoothMngr) == ERROR_RET) {
 									closesocket(i);
 									FD_CLR(i, &ActiveFdSet);
 								}
@@ -229,6 +230,7 @@ int processRequest(SOCKET i, string request, BluetoothManager* b) {
 		}
 		else {
 			// add proc listener to listenerlist, and return sucess
+			l->socket = i;
 			listeners.push_back(*l);
 			return SUCCESS_RET;
 		}
@@ -236,6 +238,14 @@ int processRequest(SOCKET i, string request, BluetoothManager* b) {
 	}
 	case BYE: {
 		// close named pipe for process
+		for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
+			if ((*it).socket == i) {
+				// correct process found - remove from listeners, close namedpipe, then return ERROR_RET so main handler closes socket
+				DisconnectNamedPipe((*it).namedPipe);
+				it = listeners.erase(it);
+				return ERROR_RET;
+			}
+		}
 		break;
 	}
 	case BATTERY_LIFE: {
@@ -243,21 +253,23 @@ int processRequest(SOCKET i, string request, BluetoothManager* b) {
 		break;
 	}
 	case START_CALIBRATION: {
-		//
+		// no-op for now
 		break;
 	}
 	case END_CALIBRATION: {
-		//
+		// no-op for now
 		break;
 	}
 	case USE_SAVED_CALIBRATION_DATA: {
-		// 
+		// no-op for now
 		break;
 	}
 	case IS_CALIBRATED: {
+		// no-op for now
 		break;
 	}
 	}
+	return SUCCESS_RET;
 }
 
 ProcListener *newNamedPipe(string processName) {
