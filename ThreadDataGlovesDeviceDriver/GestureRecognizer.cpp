@@ -1,7 +1,7 @@
 #include "GestureRecognizer.h"
 #include "BluetoothManager.h"
-#include <Windows.h>
 
+using namespace std; 
 
 /*
 FOR NOW: this is a mock class
@@ -17,8 +17,11 @@ GestureRecognizer::~GestureRecognizer() {
 }
 
 Gesture GestureRecognizer::recognize() {
-	Sleep(1000); // to mimic pausing between gestures
+	//Sleep(1000); // to mimic pausing between gestures
 	Gesture g = { PAN, 1, 1, 1 };
+	g.x = 1;
+	g.y = 1;
+	g.z = 1;
 	return g;
 }
 
@@ -28,8 +31,4 @@ void GestureRecognizer::setCalibrationWithFile(string file_path) {
 
 void GestureRecognizer::setCalibrationWithData(CalibrationInfo data) {
 	// no-op fornow
-}
-
-void GestureRecognizer::setGlove(Glove g) {
-	glove = g;
 }

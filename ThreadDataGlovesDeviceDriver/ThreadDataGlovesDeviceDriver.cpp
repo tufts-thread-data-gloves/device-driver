@@ -1,50 +1,78 @@
 // ThreadDataGlovesDeviceDriver.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
 
-#include <iostream>
+#ifndef WIN32
+	#define WIN32
+#endif
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <Windows.h>
 #include "BluetoothManager.h"
 #include "GestureRecognizer.h"
+#include <iostream>
 #include <future>
 #include <thread>
 #include <vector>
-#include <Windows.h>
 #include <string>
 #include <atlstr.h>
-#include <WinSock2.h>
 #include <codecvt>
 #include <locale>
+#include <assert.h>
+#include <wrl/wrappers/corewrappers.h>
+#include <wrl/event.h>
 
 #define PORT 10500
 #define BUFFER_SIZE 1000
+#define FD_SETSIZE 1024
+
+using namespace std; 
+
 const int ERROR_RET = -1;
 const int SUCCESS_RET = 1;
-const wstring PIPE_DIR = L"\\data\\thread_data_gloves\\";
-const string S_PIPE_DIR = "\\data\\thread_data_gloves\\";
-
-using namespace std;
+const int ASCII_NUM_VAL = 48;
+const wstring PIPE_DIR = L"\\\\.\\PIPE\\";
+const string S_PIPE_DIR = "\\\\.\\PIPE\\";
 
 struct ProcListener {
-	string namedPipePath;
+	const char *namedPipePath;
 	HANDLE namedPipe;
-	string procName;
+	const char *procName;
 	SOCKET socket;
 } typedef ProcListener;
 
+struct BufferHolder {
+	char* buf;
+	int size;
+} typedef BufferHolder;
+
 enum RequestCodes {
-	HI=0, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
+	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
+};
+
+enum ReturnCodes {
+	FAILURE=1, SUCCESS=2
 };
 
 /******  Function Declarations  *******/
-void gestureListener(GestureRecognizer *gestureRecognizer);
-int processRequest(SOCKET i, string request, BluetoothManager *b);
-ProcListener *newNamedPipe(string processName);
-int sendCodeResponse(SOCKET i, char code, string response);
+void gestureListener(SensorInfo s);
+int processRequest(SOCKET i, char *requestBytes, BluetoothManager *b);
+bool newNamedPipe(string processName,  ProcListener *pl);
+int sendCodeResponse(SOCKET i, char code, const char *response);
 void calibrate(BluetoothManager* b, CalibrationInfo &result);
+void freeProcListener(SOCKET i);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
 vector<ProcListener> listeners;
 
-int main()
+// global heap
+HANDLE heap;
+
+// global gesture recognizer
+GestureRecognizer* gestureRecognizer;
+
+// global glove found
+bool gloveFound = false;
+
+int main(int argc, char *argv[])
 {
 	INT Ret;
 	WSADATA wsaData;
@@ -53,7 +81,9 @@ int main()
 	SOCKADDR_IN InternetAddr;
 	FD_SET ActiveFdSet;
 	FD_SET ReadFdSet;
-	ULONG NonBlock;
+
+	// set up heap
+	heap = HeapCreate(HEAP_CREATE_ENABLE_EXECUTE, 0, 0);
 
 	// check to make sure we can do network communication
 	if ((Ret = WSAStartup(0x0202, &wsaData)) != 0)
@@ -63,20 +93,29 @@ int main()
 		return 1;
 	}
 
+	// initialize security needed for bluetooth
+	Microsoft::WRL::Wrappers::RoInitializeWrapper initialize(RO_INIT_MULTITHREADED);
+
+	CoInitializeSecurity(
+		nullptr, // TODO: "O:BAG:BAD:(A;;0x7;;;PS)(A;;0x3;;;SY)(A;;0x7;;;BA)(A;;0x3;;;AC)(A;;0x3;;;LS)(A;;0x3;;;NS)"
+		-1,
+		nullptr,
+		nullptr,
+		RPC_C_AUTHN_LEVEL_DEFAULT,
+		RPC_C_IMP_LEVEL_IDENTIFY,
+		NULL,
+		EOAC_NONE,
+		nullptr);
+
 	// initialize bluetooth manager
-	BluetoothManager bluetoothMngr;
+	BluetoothManager bluetoothMngr(false);
 
 	// initialize gesture recognizer with bluetooth manager instance passed by ref.
-	GestureRecognizer* gestureRecognizer = new GestureRecognizer(&bluetoothMngr);
+	gestureRecognizer = new GestureRecognizer(&bluetoothMngr);
 
-	// asyncrhonously ask bluetooth manager to find a glove
-	// on return, assign value to variable that indicates we have a glove connection, set calibration to false
-	// these values need to be passed to gesture recognizer
-	future<Glove> gloveResult = async(launch::async, bluetoothMngr.findGlove);
-
-	// start thread for gesture listening 
-	thread gestureListenerThread(gestureListener, gestureRecognizer);
-
+	// start find glove, pass in listener. When listener called, we are connected with the glove.
+	bluetoothMngr.findGlove((listenCallback)gestureListener);
+	
 	// socket server code for interprocess communication
 	// open socket, accept connections, select loop to handle both new connections and requests for communication
 	// on data request (this is endpoint), call async function and return appropriate data if necessary
@@ -104,46 +143,41 @@ int main()
 		return 1;
 	}
 
-	// Change the socket mode on the listening socket from blocking to
-	// non-block so the application will not block waiting for requests
-	NonBlock = 1;
-	if (ioctlsocket(ListenSocket, FIONBIO, &NonBlock) == SOCKET_ERROR)
-	{
-		printf("ioctlsocket() failed with error %d\n", WSAGetLastError());
-		return 1;
-	}
-	
+	printf("Listening on port 10500 \n");
+	printf("Everything set up for socket communication \n");
+
 	FD_ZERO(&ActiveFdSet);
+	printf("Listen socket is %u", ListenSocket);
 	FD_SET(ListenSocket, &ActiveFdSet);
 
 	// timeout
 	struct timeval tv;
-	tv.tv_sec = 60;
+	tv.tv_sec = 5;
 	tv.tv_usec = 0;
 
 	// initialize read buffer array
-	string buffers[FD_SETSIZE] = { "" };
+	BufferHolder* buffers = (BufferHolder*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(BufferHolder) * FD_SETSIZE);
+	for (int i = 0; i < FD_SETSIZE; i++) {
+		buffers[i].buf = (char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, BUFFER_SIZE * 2);
+	}
 	
 	int ret;
 	char buffer[BUFFER_SIZE + 1];
-	while (1) {
+	while (true) {
 		ReadFdSet = ActiveFdSet;
 		ret = select(FD_SETSIZE, &ReadFdSet, NULL, NULL, &tv);
+		printf("in select loop\n");
 		if (ret < 0) {
 			// select failed
+			printf("select failed");
 			perror("select");
 		}
 		else if (ret == 0) {
-			// timeout occured - check if glove found
-			future_status status = gloveResult.wait_for(chrono::microseconds(1));
-			if (status == future_status::ready) {
-				Glove g = gloveResult.get();
-				gestureRecognizer->setGlove(g);
-			}
+			printf("Timeout occured\n");
 		}
 		else {
 			// service all input pending sockets
-			for (int i = 0; i < FD_SETSIZE; i++) {
+			for (SOCKET i=0; i < FD_SETSIZE; i++) {
 				if (FD_ISSET(i, &ReadFdSet)) {
 					if (i == ListenSocket) {
 						// new connection request
@@ -154,31 +188,59 @@ int main()
 							exit(EXIT_FAILURE);
 						}
 						FD_SET(AcceptSocket, &ActiveFdSet);
+						printf("New connection accepted");
 					}
 					else {
 						// handle endpoint request or closed socket
 						memset(buffer, 0, BUFFER_SIZE);
+						printf("we have to stuff to read on a socket\n");
 						int recvRet = recv(i, buffer, BUFFER_SIZE, 0);
+						printf("We received %s \n", buffer);
 						if (recvRet <= 0) {
 							// close connection
+							printf("Closing a socket");
 							closesocket(i);
 							FD_CLR(i, &ActiveFdSet);
+							freeProcListener(i);
 						}
 						else {
 							// if we have the end of a request, process it, otherwise store the request
-							if (find(buffer, buffer + recvRet, '\n') != buffer + recvRet) {
-								// end of a request
-								string buf(buffer);
-								string request = buffers[i] + buf;
-								if (processRequest(i, request, &bluetoothMngr) == ERROR_RET) {
-									closesocket(i);
-									FD_CLR(i, &ActiveFdSet);
-								}
-								buffers[i] = "";
+							if (buffers[i].size > 0) {
+								// we have stored a partial request, so add this to it
+								memcpy_s(buffers[i].buf + buffers[i].size, BUFFER_SIZE * 2 - buffers[i].size, buffer, recvRet);
+								buffers[i].size += recvRet;
 							}
 							else {
-								string buf(buffer);
-								buffers[i] += buf;
+								// store this request
+								memcpy_s(buffers[i].buf, BUFFER_SIZE * 2, buffer, recvRet);
+								buffers[i].size = recvRet;
+							}
+							// check if end of request is in this payload
+							for (int j = 0; j < buffers[i].size; j++) {
+								if (buffers[i].buf[j] == '\n') {
+									// request found - is from char 0 to j
+									char* request = (char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, j + 1);
+									memcpy_s(request, j + 1, buffers[i].buf, j + 1);
+									if (buffers[i].size > j + 1) {
+										// delete request and move rest up
+										char *tmp = (char *)HeapAlloc(heap, HEAP_ZERO_MEMORY, BUFFER_SIZE * 2);
+										int newSize = buffers[i].size - (j + 1);
+										memcpy_s(tmp, BUFFER_SIZE * 2, buffers[i].buf + j + 1, newSize);
+										memset(buffers[i].buf, 0, BUFFER_SIZE * 2);
+										memcpy_s(buffers[i].buf, BUFFER_SIZE * 2, tmp, newSize);
+										buffers[i].size = newSize;
+										HeapFree(heap, NULL, tmp);
+									}
+									else {
+										// zero out whole buffer
+										memset(buffers[i].buf, 0, BUFFER_SIZE * 2);
+									}
+									if (processRequest(i, request, &bluetoothMngr) == ERROR_RET) {
+										closesocket(i);
+										FD_CLR(i, &ActiveFdSet);
+									}
+									break;
+								}
 							}
 						}
 					}
@@ -187,65 +249,84 @@ int main()
 		}
 	}
 
-	// this purposely never gets reached
-	gestureListenerThread.join();
+	return 0;
 }
 
-void gestureListener(GestureRecognizer *gestureRecognizer) {
-	while (true) {
-		Gesture g = gestureRecognizer->recognize();
+void gestureListener(SensorInfo s) {
+	// do some gesture recognition based off of accumulated time series
+	gloveFound = true;
+	Gesture g = gestureRecognizer->recognize();
+	g.x = s.gyroscope[0];
+	g.y = s.gyroscope[1];
+	g.z = s.gyroscope[2];
 
-		// make payload
-		string buf = to_string(g.gestureCode) + " " + to_string(g.x) + "," + to_string(g.y) + "," + to_string(g.z) + "\n";
-		TCHAR buffer[64];
-		size_t bufSize = buf.size();
-		_tcsncpy_s(buffer, CA2T(buf.c_str()), bufSize);
-		
+	printf("Gesture received! \n");
 
-		// received gesture, now send over named pipes
-		for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
-			if ((*it).namedPipe != INVALID_HANDLE_VALUE) {
-				DWORD bytesWritten;
-				WriteFile((*it).namedPipe, buffer, bufSize, &bytesWritten, NULL);
-			}
+	// make payload
+	TCHAR buffer[128] = { L'0' };
+	buffer[0] = (int)g.gestureCode + ASCII_NUM_VAL;
+	buffer[1] = ' ';
+	buffer[2] = g.x + ASCII_NUM_VAL;
+	buffer[3] = ',';
+	buffer[4] = g.y + ASCII_NUM_VAL;
+	buffer[5] = ',';
+	buffer[6] = g.z + ASCII_NUM_VAL;
+	const int buf_size = 7 * 2; // since we are using wchar not char
+	
+	// now send over named pipes
+	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
+		if ((*it).namedPipe != INVALID_HANDLE_VALUE) {
+			printf("Sending gesture to named pipe: %s \n", (*it).namedPipePath);
+			DWORD bytesWritten;
+			printf("payload to send is %ws", buffer);
+			WriteFile((*it).namedPipe, buffer, buf_size, &bytesWritten, NULL);
 		}
 	}
 } 
 
-int processRequest(SOCKET i, string request, BluetoothManager* b) {
-	const char* requestBytes = request.c_str();
+int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
+	printf("in process request \n");
+	printf("code is %d \n", requestBytes[0]);
 	switch (requestBytes[0]) {
 	//TODO: handle requests
+	//TODO: better error handling
 	case HI: {
 		// create new named pipe for given process and return success to client
-		ProcListener* l= newNamedPipe(request);
-		if (l == NULL) {
+		int UUID_length = 16;
+		char* procNameFromRequest = (char *)HeapAlloc(heap, HEAP_ZERO_MEMORY, UUID_length + 1);
+		memset(procNameFromRequest, 0, UUID_length + 1);
+		memcpy_s(procNameFromRequest, UUID_length + 1, requestBytes + 1, UUID_length);
+		string name = string(procNameFromRequest);
+		ProcListener pl;
+		if (!newNamedPipe(name, &pl)) {
+			printf("Failed to get new named pipe \n");
+			DWORD lastError = GetLastError();
+			printf("Last error code is %lu \n", lastError);
 			// return failure to client and disconnect
-			sendCodeResponse(i, 0, "");
+			sendCodeResponse(i, FAILURE, "");
 			return ERROR_RET;
 		}
+		printf("size of whoel thing is %d, strlen ofnamedpipepath is %d \n", sizeof(pl), strlen(pl.namedPipePath));
+		printf("Named pipe pathis %s \n", pl.namedPipePath);
+		printf("New named pipe created successfully \n");
 		// send success to client
-		if (sendCodeResponse(i, 1, l->namedPipePath) == ERROR_RET) {
+		printf("Success adding new client, about to send success\n");
+		if (sendCodeResponse(i, SUCCESS, pl.namedPipePath) == ERROR_RET) {
 			return ERROR_RET;
 		}
 		else {
 			// add proc listener to listenerlist, and return sucess
-			l->socket = i;
-			listeners.push_back(*l);
+			printf("Success sent\n");
+			pl.socket = i;
+			listeners.push_back(pl);
 			return SUCCESS_RET;
 		}
 		break;
 	}
 	case BYE: {
 		// close named pipe for process
-		for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
-			if ((*it).socket == i) {
-				// correct process found - remove from listeners, close namedpipe, then return ERROR_RET so main handler closes socket
-				DisconnectNamedPipe((*it).namedPipe);
-				it = listeners.erase(it);
-				return ERROR_RET;
-			}
-		}
+		freeProcListener(i);
+		return ERROR_RET;
 		break;
 	}
 	case BATTERY_LIFE: {
@@ -272,10 +353,10 @@ int processRequest(SOCKET i, string request, BluetoothManager* b) {
 	return SUCCESS_RET;
 }
 
-ProcListener *newNamedPipe(string processName) {
+bool newNamedPipe(string processName, ProcListener *pl) {
 	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
 		if ((*it).procName == processName) {
-			return NULL;
+			return false;
 		}
 	}
 
@@ -284,32 +365,66 @@ ProcListener *newNamedPipe(string processName) {
 	wstring procName = wstring_convert<codecvt_utf8<wchar_t>>().from_bytes(processName);
 	wstring wName = PIPE_DIR + procName;
 	pipeName = wName.c_str();
-	HANDLE namedPipe = CreateNamedPipe(pipeName, PIPE_ACCESS_OUTBOUND, PIPE_TYPE_BYTE, 1, BUFFER_SIZE, BUFFER_SIZE, 0, NULL);
-	if (namedPipe == INVALID_HANDLE_VALUE) {
-		return NULL;
-	}
-	ProcListener* l = (ProcListener *)malloc(sizeof(ProcListener));
-	l->namedPipe = namedPipe;
-	l->namedPipePath = S_PIPE_DIR + processName;
-	l->procName = processName;
+	printf("Pipe name is %ws \n", pipeName);
 
-	return l;
+	// Create new SECURITY_ATTRIBUTES and SECURITY_DESCRIPTOR structure objects
+	SECURITY_ATTRIBUTES sa;
+	SECURITY_DESCRIPTOR sd;
+
+	// Initialize the new SECURITY_DESCRIPTOR object to empty values
+	if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) == 0)
+	{
+		printf("InitializeSecurityDescriptor failed with error %d\n", GetLastError());
+		return false;
+	}
+
+	// Set the DACL field in the SECURITY_DESCRIPTOR object to NULL
+	if (SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE) == 0)
+	{
+		printf("SetSecurityDescriptorDacl failed with error %d\n", GetLastError());
+		return false;
+	}
+
+	// Assign the new SECURITY_DESCRIPTOR object to the SECURITY_ATTRIBUTES object
+	sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+	sa.lpSecurityDescriptor = &sd;
+	sa.bInheritHandle = TRUE;
+	HANDLE namedPipe = CreateNamedPipe(pipeName, PIPE_ACCESS_OUTBOUND, PIPE_TYPE_BYTE, 1, 0, 0, 1000, &sa);
+	if (namedPipe == INVALID_HANDLE_VALUE) {
+		printf("createnamedpipe failed\n");
+		return false;
+	}
+
+	pl->namedPipe = namedPipe;
+	pl->namedPipePath = (const char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, S_PIPE_DIR.length() + processName.length() + 1);
+	assert(pl->namedPipePath != NULL);
+	string namedPipePath = S_PIPE_DIR + processName;
+	memcpy_s((void *)pl->namedPipePath, namedPipePath.length(), namedPipePath.c_str(), namedPipePath.length());
+	pl->procName = (const char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, processName.length() + 1);
+	assert(pl->procName != NULL);
+	memcpy_s((void *)pl->procName, processName.length(), processName.c_str(), processName.length());
+	printf("named pipe is %s", pl->namedPipePath);
+	return true;
 }
 
-int sendCodeResponse(SOCKET i, char code, string response) {
+int sendCodeResponse(SOCKET i, char code, const char *response) {
 	// construct payload
 	char buf[BUFFER_SIZE];
-	memset(buf, 0, BUFFER_SIZE);
+	memset(buf, '\0', BUFFER_SIZE);
 	buf[0] = code;
-	if ((int)response.length() > BUFFER_SIZE - 2) {
+	int responseLength = strlen(response);
+	if (responseLength > BUFFER_SIZE - 2) {
 		// bad response
 		return ERROR_RET;
 	}
-	strncpy(&buf[1], response.c_str(), response.length());
-	buf[response.length() + 1] = '\n';
+	strncpy_s(buf + 1, BUFFER_SIZE - 2, response, (size_t)responseLength);
+	buf[responseLength + 1] = '\n';
+	buf[responseLength + 2] = '\0';
 
 	// send payload over socket
-	if (send(i, buf, response.length() + 2, 0) == SOCKET_ERROR) {
+	printf("Response is %s\n", response);
+	printf("Payload to send is %s \n", buf);
+	if (send(i, buf, responseLength + 2, 0) == SOCKET_ERROR) {
 		return ERROR_RET;
 	}
 	return SUCCESS_RET;
@@ -318,4 +433,15 @@ int sendCodeResponse(SOCKET i, char code, string response) {
 void calibrate(BluetoothManager* b, CalibrationInfo& result) {
 	// Called in thread
 	// TODO: run b->listen() until some notification from main, and then store max and min in result
+}
+
+void freeProcListener(SOCKET i) {
+	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
+		if ((*it).socket == i) {
+			// correct process found - remove from listeners, close namedpipe, then return ERROR_RET so main handler closes socket
+			DisconnectNamedPipe((*it).namedPipe);
+			it = listeners.erase(it);
+			break;
+		}
+	}
 }

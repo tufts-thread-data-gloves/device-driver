@@ -1,28 +1,23 @@
 #pragma once
-#include <string>
-
-using namespace std;
-
-struct Glove {
-	string bluetooth_addr;
-	// other information
-} typedef Glove;
 
 struct SensorInfo {
-	double finger_sensors[5];
-	double gyroscope[3];
-	double accelerometer[3];
+	float finger_sensors[5];
+	float gyroscope[3];
+	float accelerometer[3];
 } typedef SensorInfo;
+
+typedef void (*listenCallback)(SensorInfo arg);
 
 class BluetoothManager
 {
 public:
-	BluetoothManager();
+	BluetoothManager(bool mock);
 	~BluetoothManager();
-	Glove findGlove(); // blocking function
-	SensorInfo listen();
+	void findGlove(listenCallback c);
+	void setConnected(bool c);
 
 private:
-
+	bool connected;
+	bool mock; //temporary
 };
 
