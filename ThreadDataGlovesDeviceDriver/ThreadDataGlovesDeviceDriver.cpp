@@ -20,7 +20,7 @@
 #include <wrl/wrappers/corewrappers.h>
 #include <wrl/event.h>
 
-#define PORT 10500
+#define PORT 10500 // This is the port number used for socket communication with the device driver
 #define BUFFER_SIZE 1000
 #define FD_SETSIZE 1024
 
@@ -31,6 +31,7 @@ const int SUCCESS_RET = 1;
 const int ASCII_NUM_VAL = 48;
 const wstring PIPE_DIR = L"\\\\.\\PIPE\\";
 const string S_PIPE_DIR = "\\\\.\\PIPE\\";
+bool RETRY_FIND_GLOVE = false; // used to try to reconnect to glove
 
 struct ProcListener {
 	const char *namedPipePath;
@@ -44,10 +45,12 @@ struct BufferHolder {
 	int size;
 } typedef BufferHolder;
 
+// Request codes sent by applications to the device driver over the socket
 enum RequestCodes {
 	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
 };
 
+// Return codes used by device driver when sending info back to clients
 enum ReturnCodes {
 	FAILURE=1, SUCCESS=2
 };
@@ -59,6 +62,7 @@ bool newNamedPipe(string processName,  ProcListener *pl);
 int sendCodeResponse(SOCKET i, char code, const char *response);
 void calibrate(BluetoothManager* b, CalibrationInfo &result);
 void freeProcListener(SOCKET i);
+void bluetoothErrorHandler();
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
 vector<ProcListener> listeners;
@@ -108,13 +112,13 @@ int main(int argc, char *argv[])
 		nullptr);
 
 	// initialize bluetooth manager
-	BluetoothManager bluetoothMngr(false);
+	BluetoothManager bluetoothMngr;
 
 	// initialize gesture recognizer with bluetooth manager instance passed by ref.
 	gestureRecognizer = new GestureRecognizer(&bluetoothMngr);
 
 	// start find glove, pass in listener. When listener called, we are connected with the glove.
-	bluetoothMngr.findGlove((listenCallback)gestureListener);
+	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
 	
 	// socket server code for interprocess communication
 	// open socket, accept connections, select loop to handle both new connections and requests for communication
@@ -174,6 +178,11 @@ int main(int argc, char *argv[])
 		}
 		else if (ret == 0) {
 			printf("Timeout occured\n");
+			// check if retry find glove was changed to true
+			if (RETRY_FIND_GLOVE) {
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
+				RETRY_FIND_GLOVE = false;
+			}
 		}
 		else {
 			// service all input pending sockets
@@ -246,12 +255,22 @@ int main(int argc, char *argv[])
 					}
 				}
 			}
+
+			// check if retry find glove was changed to true
+			if (RETRY_FIND_GLOVE) {
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
+				RETRY_FIND_GLOVE = false;
+			}
 		}
 	}
 
 	return 0;
 }
 
+/*
+ * Function used as a callback for the bluetooth manager. When gestures are received, this function is called.
+ * Takes in SensorInfo struct, sends gesture data over all open named pipes.
+ */
 void gestureListener(SensorInfo s) {
 	// do some gesture recognition based off of accumulated time series
 	gloveFound = true;
@@ -284,12 +303,16 @@ void gestureListener(SensorInfo s) {
 	}
 } 
 
+/*
+ * processRequest used to handle incoming messages on the open sockets with clients
+ * Inputs: SOCKET i (the socket we are on), char* requestBytes (the incoming message), 
+ *	BluetoothManager* b (a pointer to our bluetooth manager)
+ * Returns: int (ERROR_RET or SUCCESS_RET)
+ */
 int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 	printf("in process request \n");
 	printf("code is %d \n", requestBytes[0]);
 	switch (requestBytes[0]) {
-	//TODO: handle requests
-	//TODO: better error handling
 	case HI: {
 		// create new named pipe for given process and return success to client
 		int UUID_length = 16;
@@ -353,6 +376,11 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 	return SUCCESS_RET;
 }
 
+/*
+ * newNamedPipe is used to create a communication channel for a new client to listen to gestures
+ * Inputs: string processName (the unique id for the client), ProcListener *pl (the list of all named pipes)
+ * Returns: bool (was it made succesfully or not)
+ */
 bool newNamedPipe(string processName, ProcListener *pl) {
 	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
 		if ((*it).procName == processName) {
@@ -407,6 +435,11 @@ bool newNamedPipe(string processName, ProcListener *pl) {
 	return true;
 }
 
+/*
+ * sendCodeResponse is used to send a success or error response over the socket to a client
+ * Input: SOCKET i (socket to send on), char code (success or error code), const char *response (response to send with the code)
+ * Returns: int (ERROR_RET or SUCCESS_RET)
+ */
 int sendCodeResponse(SOCKET i, char code, const char *response) {
 	// construct payload
 	char buf[BUFFER_SIZE];
@@ -430,11 +463,20 @@ int sendCodeResponse(SOCKET i, char code, const char *response) {
 	return SUCCESS_RET;
 }
 
+/* calibrate is used to get calibration values for the glove
+ * current NO-OP
+ * This is a TODO
+ */
 void calibrate(BluetoothManager* b, CalibrationInfo& result) {
 	// Called in thread
 	// TODO: run b->listen() until some notification from main, and then store max and min in result
 }
 
+/*
+ * freeProcListener is used to release a namedPipe when a client disconnects
+ * Input: SOCKET i (client that disconnected)
+ * Returns: void
+ */
 void freeProcListener(SOCKET i) {
 	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
 		if ((*it).socket == i) {
@@ -444,4 +486,14 @@ void freeProcListener(SOCKET i) {
 			break;
 		}
 	}
+}
+
+/*
+ * errorCallback used to pass in to the bluetooth manager - when there is an error in connecting, 
+ * we just try to reconnect
+ */
+void bluetoothErrorHandler() {
+	// We set the global variable RETRY_FIND_GLOVE to true to tell our select loop to retry since we don't
+	// have access to the bluetooth manager in this function
+	RETRY_FIND_GLOVE = true;
 }

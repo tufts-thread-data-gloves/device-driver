@@ -7,17 +7,17 @@ struct SensorInfo {
 } typedef SensorInfo;
 
 typedef void (*listenCallback)(SensorInfo arg);
+typedef void (*errorCallback)();
 
 class BluetoothManager
 {
 public:
-	BluetoothManager(bool mock);
+	BluetoothManager();
 	~BluetoothManager();
-	void findGlove(listenCallback c);
+	void findGlove(listenCallback c, errorCallback e);
 	void setConnected(bool c);
 
 private:
 	bool connected;
-	bool mock; //temporary
 };
 
