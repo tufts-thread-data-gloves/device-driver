@@ -19,7 +19,8 @@
 using namespace Platform;
 using namespace Windows::Devices;
 
-concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, errorCallback e);
+concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound);
 SensorInfo newSensorInfo(float x, float y, float z);
 
 // GUID for the services and characteristics
@@ -28,8 +29,9 @@ GUID gyroXCharGUID;
 GUID gyroYCharGUID;
 GUID gyroZCharGUID;
 
-BluetoothManager::BluetoothManager() {
+BluetoothManager::BluetoothManager(HANDLE *heapPtr) {
 	connected = false; // this isn't used for anything currently
+	recognizer = new GestureRecognizer(heapPtr);
 }
 
 BluetoothManager::~BluetoothManager() {
@@ -41,7 +43,7 @@ BluetoothManager::~BluetoothManager() {
  * There is no timeout, so this will go until it finds the glove
  * Takes in the listenCallback used once we are connected + receiving gestures
  */
-void BluetoothManager::findGlove(listenCallback c, errorCallback e) {
+void BluetoothManager::findGlove(listenCallback c, errorCallback e, bool *globalGloveFound) {
 	printf("In find glove \n");
 	fflush(stdout);
 	
@@ -49,23 +51,24 @@ void BluetoothManager::findGlove(listenCallback c, errorCallback e) {
 	bleAdvertisementWatcher->ScanningMode = Bluetooth::Advertisement::BluetoothLEScanningMode::Active;
 	// Adds an event handler for when we find a new bluetooth device. If its local name is Salmon Glove, then we attempt to connect to it.
 	bleAdvertisementWatcher->Received += ref new Windows::Foundation::TypedEventHandler<Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^, Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^>(
-		[bleAdvertisementWatcher, c, e](Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^ watcher, Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^ eventArgs) {
+		[bleAdvertisementWatcher, c, e, this, globalGloveFound](Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^ watcher, Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^ eventArgs) {
 			auto serviceUuids = eventArgs->Advertisement->ServiceUuids;
 			String^ localName = eventArgs->Advertisement->LocalName;
 			if (wcscmp(localName->Begin(), L"Salmon Glove") == 0) {
 				printf("Salmon glove found! %llu\n", eventArgs->BluetoothAddress);
 				bleAdvertisementWatcher->Stop();
-				connectToGlove(eventArgs->BluetoothAddress, c, e);
+				connectToGlove(eventArgs->BluetoothAddress, c, e, &recognizer, globalGloveFound);
 			}
 		});
 	bleAdvertisementWatcher->Start(); // this starts the async process above
 }
 
-concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, errorCallback e) {
-	CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
-	CLSIDFromString(L"{1b9b0004-3e7e-4c78-93b3-0f86540298f1}", &gyroXCharGUID);
-	CLSIDFromString(L"{1b9b0005-3e7e-4c78-93b3-0f86540298f1}", &gyroYCharGUID);
-	CLSIDFromString(L"{1b9b0006-3e7e-4c78-93b3-0f86540298f1}", &gyroZCharGUID);
+concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound) {
+	auto _ = CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
+	_ = CLSIDFromString(L"{1b9b0004-3e7e-4c78-93b3-0f86540298f1}", &gyroXCharGUID);
+	_ = CLSIDFromString(L"{1b9b0005-3e7e-4c78-93b3-0f86540298f1}", &gyroYCharGUID);
+	_ = CLSIDFromString(L"{1b9b0006-3e7e-4c78-93b3-0f86540298f1}", &gyroZCharGUID);
 
 	auto device = co_await Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetoothAddress);
 	printf("Device found \n");
@@ -77,7 +80,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 	else {
 		for (int i = 0; i < allServices->Services->Size; i++) {
 			OLECHAR* guidString;
-			StringFromCLSID(allServices->Services->GetAt(i)->Uuid, &guidString);
+			_ = StringFromCLSID(allServices->Services->GetAt(i)->Uuid, &guidString);
 			std::cout << "Service found " << guidString << std::endl;
 		}
 
@@ -101,10 +104,14 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		}
 
 		// We are connected at this point
+		*globalGloveFound = true;
 		// infinite loop where we are reading
+		long timeCount = 0;
 		for (;;) {
 			// TODO: change sleep or remove it
-			Sleep(1000);
+			Sleep(100);
+			timeCount += 100;
+			if (timeCount > 100 * TIME_SERIES_SIZE) timeCount = 0;
 			
 			// detect if bluetooth device disconnected
 			if (device->ConnectionStatus == Bluetooth::BluetoothConnectionStatus::Disconnected) {
@@ -138,8 +145,15 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 
 			printf("Gyroscope values are  %2.2f, %2.2f, %2.2f", xVal, yVal, zVal);
 
-			// call callback listener
-			c(newSensorInfo(xVal, yVal, zVal));
+			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
+			// recognizer to try to find a gesture
+			SensorInfo s = newSensorInfo(xVal, yVal, zVal);
+			(*recognizer)->addToTimeSeries(s);
+
+			if (timeCount % 1000 == 0) {
+				Gesture *g = (*recognizer)->recognize();
+				if (g != NULL) c(g); // call callback listener
+			}
 		}
 	}
 }
