@@ -163,7 +163,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 
 			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
 			// recognizer to try to find a gesture
-			SensorInfo s = newSensorInfo(xVal, yVal, zVal);
+			SensorInfo s = newSensorInfo(axVal, ayVal, azVal);
 			(*recognizer)->addToTimeSeries(s);
 
 			if (timeCount % 1000 == 0) {

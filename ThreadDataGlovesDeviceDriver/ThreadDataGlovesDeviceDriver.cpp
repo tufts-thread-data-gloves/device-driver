@@ -432,7 +432,7 @@ bool newNamedPipe(string processName, ProcListener *pl) {
 /*
  * sendCodeResponse is used to send a success or error response over the socket to a client
  * Input: SOCKET i (socket to send on), char code (success or error code), const char *response (response to send with the code)
- * Returns: int (ERROR_RET or SUCCESS_RET)
+ * Returns: int (ERROR or SUCCESS)
  */
 int sendCodeResponse(SOCKET i, char code, const char *response) {
 	// construct payload
