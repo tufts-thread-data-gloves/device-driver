@@ -1,23 +1,18 @@
-#pragma once
+#include "GestureRecognizer.h"
 
-struct SensorInfo {
-	float finger_sensors[5];
-	float gyroscope[3];
-	float accelerometer[3];
-} typedef SensorInfo;
-
-typedef void (*listenCallback)(SensorInfo arg);
+typedef void (*listenCallback)(Gesture *arg);
 typedef void (*errorCallback)();
 
 class BluetoothManager
 {
 public:
-	BluetoothManager();
+	BluetoothManager(HANDLE *heapPtr);
 	~BluetoothManager();
-	void findGlove(listenCallback c, errorCallback e);
+	void findGlove(listenCallback c, errorCallback e, bool *globalGloveFound);
 	void setConnected(bool c);
 
 private:
 	bool connected;
+	GestureRecognizer *recognizer;
 };
 

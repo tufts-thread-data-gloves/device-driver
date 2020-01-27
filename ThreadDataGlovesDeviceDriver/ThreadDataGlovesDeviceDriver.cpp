@@ -7,7 +7,6 @@
 #include <WS2tcpip.h>
 #include <Windows.h>
 #include "BluetoothManager.h"
-#include "GestureRecognizer.h"
 #include <iostream>
 #include <future>
 #include <thread>
@@ -47,7 +46,7 @@ struct BufferHolder {
 
 // Request codes sent by applications to the device driver over the socket
 enum RequestCodes {
-	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED
+	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED, IS_GLOVE_CONNECTED
 };
 
 // Return codes used by device driver when sending info back to clients
@@ -56,7 +55,7 @@ enum ReturnCodes {
 };
 
 /******  Function Declarations  *******/
-void gestureListener(SensorInfo s);
+void gestureListener(Gesture *g);
 int processRequest(SOCKET i, char *requestBytes, BluetoothManager *b);
 bool newNamedPipe(string processName,  ProcListener *pl);
 int sendCodeResponse(SOCKET i, char code, const char *response);
@@ -69,9 +68,6 @@ vector<ProcListener> listeners;
 
 // global heap
 HANDLE heap;
-
-// global gesture recognizer
-GestureRecognizer* gestureRecognizer;
 
 // global glove found
 bool gloveFound = false;
@@ -112,13 +108,10 @@ int main(int argc, char *argv[])
 		nullptr);
 
 	// initialize bluetooth manager
-	BluetoothManager bluetoothMngr;
-
-	// initialize gesture recognizer with bluetooth manager instance passed by ref.
-	gestureRecognizer = new GestureRecognizer(&bluetoothMngr);
+	BluetoothManager bluetoothMngr(&heap);
 
 	// start find glove, pass in listener. When listener called, we are connected with the glove.
-	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
+	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
 	
 	// socket server code for interprocess communication
 	// open socket, accept connections, select loop to handle both new connections and requests for communication
@@ -180,7 +173,7 @@ int main(int argc, char *argv[])
 			printf("Timeout occured\n");
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -258,7 +251,7 @@ int main(int argc, char *argv[])
 
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -271,25 +264,18 @@ int main(int argc, char *argv[])
  * Function used as a callback for the bluetooth manager. When gestures are received, this function is called.
  * Takes in SensorInfo struct, sends gesture data over all open named pipes.
  */
-void gestureListener(SensorInfo s) {
-	// do some gesture recognition based off of accumulated time series
-	gloveFound = true;
-	Gesture g = gestureRecognizer->recognize();
-	g.x = s.gyroscope[0];
-	g.y = s.gyroscope[1];
-	g.z = s.gyroscope[2];
-
+void gestureListener(Gesture *g) {
 	printf("Gesture received! \n");
 
 	// make payload
 	TCHAR buffer[128] = { L'0' };
-	buffer[0] = (int)g.gestureCode + ASCII_NUM_VAL;
+	buffer[0] = (int)g->gestureCode + ASCII_NUM_VAL;
 	buffer[1] = ' ';
-	buffer[2] = g.x + ASCII_NUM_VAL;
+	buffer[2] = g->x + ASCII_NUM_VAL;
 	buffer[3] = ',';
-	buffer[4] = g.y + ASCII_NUM_VAL;
+	buffer[4] = g->y + ASCII_NUM_VAL;
 	buffer[5] = ',';
-	buffer[6] = g.z + ASCII_NUM_VAL;
+	buffer[6] = g->z + ASCII_NUM_VAL;
 	const int buf_size = 7 * 2; // since we are using wchar not char
 	
 	// now send over named pipes
@@ -372,6 +358,14 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		// no-op for now
 		break;
 	}
+	case IS_GLOVE_CONNECTED: {
+		// respond with gloveFound with code response
+		if (gloveFound)
+			sendCodeResponse(i, SUCCESS, "yes");
+		else
+			sendCodeResponse(i, SUCCESS, "no");
+	}
+	default: break;
 	}
 	return SUCCESS_RET;
 }
@@ -495,5 +489,6 @@ void freeProcListener(SOCKET i) {
 void bluetoothErrorHandler() {
 	// We set the global variable RETRY_FIND_GLOVE to true to tell our select loop to retry since we don't
 	// have access to the bluetooth manager in this function
+	gloveFound = false;
 	RETRY_FIND_GLOVE = true;
 }
