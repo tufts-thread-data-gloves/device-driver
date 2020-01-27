@@ -13,7 +13,7 @@
 #include <iomanip>
 #include <experimental/resumable>
 #include <pplawait.h>
-#include <string>
+#include <cstring>
 #include <rpcdce.h>
 
 using namespace Platform;
@@ -24,9 +24,8 @@ SensorInfo newSensorInfo(float x, float y, float z);
 
 // GUID for the services and characteristics
 GUID serviceUUID;
-GUID gyroXCharGUID;
-GUID gyroYCharGUID;
-GUID gyroZCharGUID;
+GUID dataCharGUID;
+
 
 BluetoothManager::BluetoothManager() {
 	connected = false; // this isn't used for anything currently
@@ -63,9 +62,8 @@ void BluetoothManager::findGlove(listenCallback c, errorCallback e) {
 
 concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, errorCallback e) {
 	CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
-	CLSIDFromString(L"{1b9b0004-3e7e-4c78-93b3-0f86540298f1}", &gyroXCharGUID);
-	CLSIDFromString(L"{1b9b0005-3e7e-4c78-93b3-0f86540298f1}", &gyroYCharGUID);
-	CLSIDFromString(L"{1b9b0006-3e7e-4c78-93b3-0f86540298f1}", &gyroZCharGUID);
+	CLSIDFromString(L"{1b9b0001-3e7e-4c78-93b3-0f86540298f1}", &dataCharGUID);
+
 
 	auto device = co_await Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetoothAddress);
 	printf("Device found \n");
@@ -81,17 +79,17 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			std::cout << "Service found " << guidString << std::endl;
 		}
 
-		Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroXCharResult;
-		Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroYCharResult;
-		Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroZCharResult;
+		Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ dataCharResult;
+		//Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroYCharResult;
+		//Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroZCharResult;
 		try {
 			printf("Services found \n");
 			auto servicesResult = co_await device->GetGattServicesForUuidAsync(serviceUUID);
 			auto service = servicesResult->Services->GetAt(0);
 			printf("Service found \n");
-			gyroXCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroXCharGUID))->Characteristics->GetAt(0);
-			gyroYCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroYCharGUID))->Characteristics->GetAt(0);
-			gyroZCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroZCharGUID))->Characteristics->GetAt(0);
+			dataCharResult = (co_await service->GetCharacteristicsForUuidAsync(dataCharGUID))->Characteristics->GetAt(0);
+			//gyroYCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroYCharGUID))->Characteristics->GetAt(0);
+			//gyroZCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroZCharGUID))->Characteristics->GetAt(0);
 			printf("Characteristics found \n");
 		}
 		catch (OutOfBoundsException^) {
@@ -104,7 +102,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		// infinite loop where we are reading
 		for (;;) {
 			// TODO: change sleep or remove it
-			Sleep(1000);
+			//Sleep(10);
 			
 			// detect if bluetooth device disconnected
 			if (device->ConnectionStatus == Bluetooth::BluetoothConnectionStatus::Disconnected) {
@@ -114,13 +112,13 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 				break;
 			}
 
-			Windows::Storage::Streams::IBuffer^ x;
-			Windows::Storage::Streams::IBuffer^ y;
-			Windows::Storage::Streams::IBuffer^ z;
+			Windows::Storage::Streams::IBuffer^ data;
+			//Windows::Storage::Streams::IBuffer^ y;
+			//Windows::Storage::Streams::IBuffer^ z;
 			try {
-				x = (co_await gyroXCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
-				y = (co_await gyroYCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
-				z = (co_await gyroZCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
+				data = (co_await dataCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
+				//y = (co_await gyroYCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
+				//z = (co_await gyroZCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
 			}
 			catch (Exception^) { 
 				// if device disconnected while reading, we catch that exception here
@@ -129,17 +127,36 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			}
 
 			// get each raw value
-			auto dataReaderX = Windows::Storage::Streams::DataReader::FromBuffer(x);
-			float xVal = dataReaderX->ReadSingle();
-			auto dataReaderY = Windows::Storage::Streams::DataReader::FromBuffer(y);
-			float yVal = dataReaderY->ReadSingle();
-			auto dataReaderZ = Windows::Storage::Streams::DataReader::FromBuffer(z);
-			float zVal = dataReaderZ->ReadSingle();
+			auto dataReader = Windows::Storage::Streams::DataReader::FromBuffer(data);
+			byte gloveData[34];
+			for (int i = 0; i < 34; i++) {
+				gloveData[i] = dataReader->ReadByte();
+				//printf("%u ||", gloveData[i]);
+			}
+			//printf("\n");
+			float axVal = *(((float*)gloveData));
+			float ayVal = *(((float*)gloveData) + 1);
+			float azVal = *(((float*)gloveData) + 2);
+			float mxVal = *(((float*)gloveData) + 3);
+			float myVal = *(((float*)gloveData) + 4);
+			float mzVal = *(((float*)gloveData) + 5);
+			uint16_t thread1 = *(((uint16_t*)gloveData) + 12);
+			uint16_t thread2 = *(((uint16_t*)gloveData) + 13);
+			uint16_t thread3 = *(((uint16_t*)gloveData) + 14);
+			uint16_t thread4 = *(((uint16_t*)gloveData) + 15);
+			uint16_t thread5 = *(((uint16_t*)gloveData) + 16);
 
-			printf("Gyroscope values are  %2.2f, %2.2f, %2.2f", xVal, yVal, zVal);
+			//auto dataReaderY = Windows::Storage::Streams::DataReader::FromBuffer(y);
+			//float yVal = dataReaderY->ReadSingle();
+			//auto dataReaderZ = Windows::Storage::Streams::DataReader::FromBuffer(z);
+			//float zVal = dataReaderZ->ReadSingle();
+
+			printf("Accelerometer values are  %2.2f, %2.2f, %2.2f\n", axVal, ayVal, azVal);
+			printf("Magnetometer values are %3.3f, %3.3f, %3.3f\n", mxVal, myVal, mzVal);
+			printf("Thread values are %u, %u, %u, %u, %u\n", thread1, thread2, thread3, thread4, thread5);
 
 			// call callback listener
-			c(newSensorInfo(xVal, yVal, zVal));
+			c(newSensorInfo(axVal, ayVal, azVal));
 		}
 	}
 }
