@@ -20,12 +20,15 @@ using namespace Platform;
 using namespace Windows::Devices;
 
 concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
-	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound);
-SensorInfo newSensorInfo(float x, float y, float z);
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, std::mutex* calLock);
+SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3], uint16_t threadValues[5], CalibrationInfo ci);
+CalibrationInfo newCalibrationInfo(uint16_t minReading[5], uint16_t maxReading[5]);
 
 // GUID for the services and characteristics
 GUID serviceUUID;
 GUID dataCharGUID;
+
+std::mutex BluetoothManager::calibrationLock;
 
 BluetoothManager::BluetoothManager(HANDLE *heapPtr) {
 	connected = false; // this isn't used for anything currently
@@ -41,7 +44,7 @@ BluetoothManager::~BluetoothManager() {
  * There is no timeout, so this will go until it finds the glove
  * Takes in the listenCallback used once we are connected + receiving gestures
  */
-void BluetoothManager::findGlove(listenCallback c, errorCallback e, bool *globalGloveFound) {
+void BluetoothManager::findGlove(listenCallback c, errorCallback e, bool *globalGloveFound, CalibrationStruct* globalCalibrationStruct) {
 	printf("In find glove \n");
 	fflush(stdout);
 	
@@ -49,23 +52,23 @@ void BluetoothManager::findGlove(listenCallback c, errorCallback e, bool *global
 	bleAdvertisementWatcher->ScanningMode = Bluetooth::Advertisement::BluetoothLEScanningMode::Active;
 	// Adds an event handler for when we find a new bluetooth device. If its local name is Salmon Glove, then we attempt to connect to it.
 	bleAdvertisementWatcher->Received += ref new Windows::Foundation::TypedEventHandler<Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^, Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^>(
-		[bleAdvertisementWatcher, c, e, this, globalGloveFound](Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^ watcher, Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^ eventArgs) {
+		[bleAdvertisementWatcher, c, e, this, globalGloveFound, globalCalibrationStruct](Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher^ watcher, Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs^ eventArgs) {
 			auto serviceUuids = eventArgs->Advertisement->ServiceUuids;
 			String^ localName = eventArgs->Advertisement->LocalName;
 			if (wcscmp(localName->Begin(), L"Salmon Glove") == 0) {
 				printf("Salmon glove found! %llu\n", eventArgs->BluetoothAddress);
 				bleAdvertisementWatcher->Stop();
-				connectToGlove(eventArgs->BluetoothAddress, c, e, &recognizer, globalGloveFound);
+				connectToGlove(eventArgs->BluetoothAddress, c, e, &recognizer, globalGloveFound, globalCalibrationStruct, &calibrationLock);
 			}
 		});
 	bleAdvertisementWatcher->Start(); // this starts the async process above
 }
 
 concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
-	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound) {
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, std::mutex *calLock) {
 
-	CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
-	CLSIDFromString(L"{1b9b0001-3e7e-4c78-93b3-0f86540298f1}", &dataCharGUID);
+	auto _ = CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
+	_ = CLSIDFromString(L"{1b9b0001-3e7e-4c78-93b3-0f86540298f1}", &dataCharGUID);
 
 
 	auto device = co_await Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetoothAddress);
@@ -76,23 +79,19 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		e();
 	}
 	else {
-		for (int i = 0; i < allServices->Services->Size; i++) {
+		for (unsigned i = 0; i < allServices->Services->Size; i++) {
 			OLECHAR* guidString;
 			StringFromCLSID(allServices->Services->GetAt(i)->Uuid, &guidString);
 			std::cout << "Service found " << guidString << std::endl;
 		}
 
 		Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ dataCharResult;
-		//Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroYCharResult;
-		//Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic^ gyroZCharResult;
 		try {
 			printf("Services found \n");
 			auto servicesResult = co_await device->GetGattServicesForUuidAsync(serviceUUID);
 			auto service = servicesResult->Services->GetAt(0);
 			printf("Service found \n");
 			dataCharResult = (co_await service->GetCharacteristicsForUuidAsync(dataCharGUID))->Characteristics->GetAt(0);
-			//gyroYCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroYCharGUID))->Characteristics->GetAt(0);
-			//gyroZCharResult = (co_await service->GetCharacteristicsForUuidAsync(gyroZCharGUID))->Characteristics->GetAt(0);
 			printf("Characteristics found \n");
 		}
 		catch (OutOfBoundsException^) {
@@ -105,10 +104,13 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		*globalGloveFound = true;
 		// infinite loop where we are reading
 		long timeCount = 0;
+		bool doingCalibration = false;
+		uint16_t minValues[5] = { 0 };
+		uint16_t maxValues[5] = { 0 };
+
 		for (;;) {
-			// TODO: change sleep or remove it
 			timeCount += 1;
-			if (timeCount > 100 * TIME_SERIES_SIZE) timeCount = 0;
+			if (timeCount > TIME_SERIES_SIZE) timeCount = 0;
 			
 			// detect if bluetooth device disconnected
 			if (device->ConnectionStatus == Bluetooth::BluetoothConnectionStatus::Disconnected) {
@@ -119,12 +121,8 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			}
 
 			Windows::Storage::Streams::IBuffer^ data;
-			//Windows::Storage::Streams::IBuffer^ y;
-			//Windows::Storage::Streams::IBuffer^ z;
 			try {
 				data = (co_await dataCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
-				//y = (co_await gyroYCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
-				//z = (co_await gyroZCharResult->ReadValueAsync(Bluetooth::BluetoothCacheMode::Uncached))->Value;
 			}
 			catch (Exception^) { 
 				// if device disconnected while reading, we catch that exception here
@@ -152,10 +150,6 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			uint16_t thread4 = *(((uint16_t*)gloveData) + 15);
 			uint16_t thread5 = *(((uint16_t*)gloveData) + 16);
 
-			//auto dataReaderY = Windows::Storage::Streams::DataReader::FromBuffer(y);
-			//float yVal = dataReaderY->ReadSingle();
-			//auto dataReaderZ = Windows::Storage::Streams::DataReader::FromBuffer(z);
-			//float zVal = dataReaderZ->ReadSingle();
 
 			printf("Accelerometer values are  %2.2f, %2.2f, %2.2f\n", axVal, ayVal, azVal);
 			printf("Magnetometer values are %3.3f, %3.3f, %3.3f\n", mxVal, myVal, mzVal);
@@ -163,8 +157,71 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 
 			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
 			// recognizer to try to find a gesture
-			SensorInfo s = newSensorInfo(axVal, ayVal, azVal);
-			(*recognizer)->addToTimeSeries(s);
+			float accelerometerValues[3] = { axVal, ayVal, azVal };
+			float magnometerValues[3] = { mxVal, myVal,  mzVal };
+			uint16_t threadValues[5] = { thread1, thread2, thread3, thread4, thread5 };
+
+			if ((*recognizer)->isCalibrationSet()) {
+				// scale sensor info by calibration info
+				SensorInfo s = newSensorInfo(accelerometerValues, magnometerValues, threadValues, (*recognizer)->getCalibrationInfo());
+				(*recognizer)->addToTimeSeries(s);
+			}
+			else {
+				// are we currently calibrating?
+				if (globalCalibrationStruct->calibrationTrigger && !doingCalibration) {
+					// determine wheteher or not to do a new calibration
+					calLock->lock();
+					globalCalibrationStruct->calibrationTrigger = false;
+					calLock->unlock();
+					if (globalCalibrationStruct->from_saved_file) {
+						// we have it in the calibrationinfo - this will set calibration
+						(*recognizer)->setCalibrationWithData(globalCalibrationStruct->ci);
+						globalCalibrationStruct->gloveCalibrated = true;
+					}
+					else {
+						doingCalibration = true; // this will tell us to record data in future loop iterations
+						globalCalibrationStruct->calibrationStarted = true;
+						minValues[0] = thread1;
+						minValues[1] = thread2;
+						minValues[2] = thread3;
+						minValues[3] = thread4;
+						minValues[4] = thread5;
+						maxValues[0] = thread1;
+						maxValues[1] = thread2;
+						maxValues[2] = thread3;
+						maxValues[3] = thread4;
+						maxValues[4] = thread5;
+					}
+				}
+				else if (globalCalibrationStruct->calibrationTrigger && doingCalibration) {
+					// this is when we stop calibrating and save the calibration data
+					calLock->lock();
+					doingCalibration = false;
+					globalCalibrationStruct->calibrationTrigger = false;
+					globalCalibrationStruct->calibrationStarted = false;
+					
+					// save  min and max values
+					CalibrationInfo ci = newCalibrationInfo(minValues, maxValues);
+					(*recognizer)->setCalibrationWithData(ci);
+					globalCalibrationStruct->gloveCalibrated = true;
+
+					// add it to the global struct so main thread can use the calibration data
+					globalCalibrationStruct->ci = ci;
+					calLock->unlock();
+				}
+				else if (doingCalibration) {
+					minValues[0] = thread1 < minValues[0] ? thread1 : minValues[0];
+					minValues[1] = thread2 < minValues[1] ? thread2 : minValues[1];
+					minValues[2] = thread3 < minValues[2] ? thread3 : minValues[2];
+					minValues[3] = thread4 < minValues[3] ? thread4 : minValues[3];
+					minValues[4] = thread5 < minValues[4] ? thread5 : minValues[4];
+					maxValues[0] = thread1 > maxValues[0] ? thread1 : maxValues[0];
+					maxValues[1] = thread2 > maxValues[1] ? thread2 : maxValues[1];
+					maxValues[2] = thread3 > maxValues[2] ? thread3 : maxValues[2];
+					maxValues[3] = thread4 > maxValues[3] ? thread4 : maxValues[3];
+					maxValues[4] = thread5 > maxValues[4] ? thread5 : maxValues[4];
+				}
+			}
 
 			if (timeCount % 1000 == 0) {
 				Gesture *g = (*recognizer)->recognize();
@@ -174,8 +231,35 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 	}
 }
 
-// to form sensor info object from just gyro x,y,z values
-SensorInfo newSensorInfo(float x, float y, float z) {
-	SensorInfo i = { {0, 0,0,0,0}, {0,0,0}, {x,y,z} };
-	return i;
+// Form sensor info struct from all the accelerometer, magnometer and thread values
+SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3], uint16_t threadValues[5], CalibrationInfo ci) {
+	// normalize values first
+	float newThreadValues[5];
+	for (int i = 0; i < 5; i++) {
+		newThreadValues[i] = (threadValues[i] - ci.minReading[i]) / (ci.maxReading[i] - ci.minReading[i]);
+ 	}
+
+	SensorInfo SI = {
+		newThreadValues, // finger sensor array
+		accelerometerValues, // accelerometer array
+		magnometerValues // magnometer array
+	};
+	return SI;
 }
+
+// Returns calibration info struct from min reading and max reading arrays
+CalibrationInfo newCalibrationInfo(uint16_t minReading[5], uint16_t maxReading[5]) {
+	CalibrationInfo ci;
+	ci.maxReading[0] = maxReading[0];
+	ci.maxReading[1] = maxReading[1];
+	ci.maxReading[2] = maxReading[2];
+	ci.maxReading[3] = maxReading[3];
+	ci.maxReading[4] = maxReading[4];
+	ci.minReading[0] = minReading[0];
+	ci.minReading[1] = minReading[1];
+	ci.minReading[2] = minReading[2];
+	ci.minReading[3] = minReading[3];
+	ci.minReading[4] = minReading[4];
+	return ci;
+}
+

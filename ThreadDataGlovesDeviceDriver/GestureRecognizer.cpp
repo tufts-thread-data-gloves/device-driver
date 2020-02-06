@@ -21,7 +21,7 @@ GestureRecognizer::~GestureRecognizer() {
  * Returns gesture if gesture was recognized, otherwise returns NULL
  */
 Gesture *GestureRecognizer::recognize() {
-	// this is mocking finding a gesture for now
+	/*// this is mocking finding a gesture for now
 	double random = rand() / double(RAND_MAX);
 	if (random > 0.5) {
 		Gesture *g = (Gesture*)HeapAlloc(*(heapPtr), HEAP_ZERO_MEMORY, sizeof(Gesture));
@@ -31,12 +31,9 @@ Gesture *GestureRecognizer::recognize() {
 		g->y = 1;
 		g->z = 1;
 		return g;
-	}
+	}*/
+	// TODO: check if we are calibrated, then perform gesture recognition
 	return NULL;
-}
-
-void GestureRecognizer::setCalibrationWithFile(string file_path) {
-	// no-op for now
 }
 
 void GestureRecognizer::setCalibrationWithData(CalibrationInfo data) {
@@ -45,6 +42,10 @@ void GestureRecognizer::setCalibrationWithData(CalibrationInfo data) {
 
 bool GestureRecognizer::isCalibrationSet() {
 	return calibrationSet;
+}
+
+CalibrationInfo GestureRecognizer::getCalibrationInfo() {
+	return calibrationInfo;
 }
 
 /*

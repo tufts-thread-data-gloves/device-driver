@@ -24,3 +24,10 @@
 12. Restart your computer for the changes to take effect
 
 The solution should now build and be able to connect to a salmon glove.
+
+## Common Problems
+1. If you see issues in building that have to do with co await and concurrency tasks, 
+make sure that your C++ version is set to C++11.
+2. If you see linker errors with windows socket functions, this Stack Overflow question may help:
+https://stackoverflow.com/questions/17069802/c-winsock2-errors?fbclid=IwAR0BaGDmQJed-hFH1J6fGDvtTHks_zzIuVUbrBlZ_ccfpWi57NdX9a9VBAo
+

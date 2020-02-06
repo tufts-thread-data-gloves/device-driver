@@ -1,13 +1,12 @@
 #pragma once
-#include <string>
 #include <Windows.h>
 #include <boost/circular_buffer.hpp>
 #define TIME_SERIES_SIZE 1000
 
 // CalibrationInfo stores max reading from strain sensors and min reading
 struct CalibrationInfo {
-	double maxReading[5];
-	double minReading[5];
+	uint16_t maxReading[5];
+	uint16_t minReading[5];
 } typedef CalibrationInfo;
 
 enum GestureCode {
@@ -23,9 +22,9 @@ struct Gesture {
 } typedef Gesture;
 
 struct SensorInfo {
-	float finger_sensors[5];
-	float gyroscope[3];
-	float accelerometer[3];
+	float *finger_sensors; // array of 5
+	float *accelerometer; // array of 3
+	float *magnometer; // array of 3
 } typedef SensorInfo;
 
 class GestureRecognizer
@@ -34,9 +33,9 @@ public:
 	GestureRecognizer(HANDLE *heapPtr);
 	~GestureRecognizer();
 	Gesture *recognize();
-	void setCalibrationWithFile(std::string file_path);
 	void setCalibrationWithData(CalibrationInfo data);
 	bool isCalibrationSet();
+	CalibrationInfo getCalibrationInfo();
 	void GestureRecognizer::addToTimeSeries(SensorInfo s);
 
 private:

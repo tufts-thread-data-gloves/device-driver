@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include "BluetoothManager.h"
 #include <iostream>
+#include <fstream>
 #include <future>
 #include <thread>
 #include <vector>
@@ -62,6 +63,9 @@ int sendCodeResponse(SOCKET i, char code, const char *response);
 void calibrate(BluetoothManager* b, CalibrationInfo &result);
 void freeProcListener(SOCKET i);
 void bluetoothErrorHandler();
+void zeroCalibrationStruct();
+void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci);
+char* createCalibrationPayload(CalibrationInfo ci);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
 vector<ProcListener> listeners;
@@ -71,6 +75,10 @@ HANDLE heap;
 
 // global glove found
 bool gloveFound = false;
+// global glove calibrated structure
+CalibrationStruct globalCalibrationStruct;
+// calibration lock - used to indicate when calibration is done
+mutex calibrationLock;
 
 int main(int argc, char *argv[])
 {
@@ -96,7 +104,7 @@ int main(int argc, char *argv[])
 	// initialize security needed for bluetooth
 	Microsoft::WRL::Wrappers::RoInitializeWrapper initialize(RO_INIT_MULTITHREADED);
 
-	CoInitializeSecurity(
+	auto _ = CoInitializeSecurity(
 		nullptr, // TODO: "O:BAG:BAD:(A;;0x7;;;PS)(A;;0x3;;;SY)(A;;0x7;;;BA)(A;;0x3;;;AC)(A;;0x3;;;LS)(A;;0x3;;;NS)"
 		-1,
 		nullptr,
@@ -110,8 +118,11 @@ int main(int argc, char *argv[])
 	// initialize bluetooth manager
 	BluetoothManager bluetoothMngr(&heap);
 
+	// zero calibration struct to make sure we have a fresh structure to start out with
+	zeroCalibrationStruct();
+
 	// start find glove, pass in listener. When listener called, we are connected with the glove.
-	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 	
 	// socket server code for interprocess communication
 	// open socket, accept connections, select loop to handle both new connections and requests for communication
@@ -173,7 +184,7 @@ int main(int argc, char *argv[])
 			printf("Timeout occured\n");
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -236,6 +247,7 @@ int main(int argc, char *argv[])
 									else {
 										// zero out whole buffer
 										memset(buffers[i].buf, 0, BUFFER_SIZE * 2);
+										buffers[i].size = 0;
 									}
 									if (processRequest(i, request, &bluetoothMngr) == ERROR_RET) {
 										closesocket(i);
@@ -251,7 +263,7 @@ int main(int argc, char *argv[])
 
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -296,7 +308,10 @@ void gestureListener(Gesture *g) {
  * Returns: int (ERROR_RET or SUCCESS_RET)
  */
 int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
-	printf("in process request \n");
+	printf("in process request %s\n", requestBytes);
+	uint32_t firstFourBytes;
+	memcpy(&firstFourBytes, requestBytes, 4);
+	printf("first two bytes are, %x", firstFourBytes);
 	printf("code is %d \n", requestBytes[0]);
 	switch (requestBytes[0]) {
 	case HI: {
@@ -343,19 +358,86 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		break;
 	}
 	case START_CALIBRATION: {
-		// no-op for now
+		// If our glove is connected:
+		// Lock calibration lock, and trigger the boolean value in shared calibration struct global variable and then return success
+		if (gloveFound) {
+			b->calibrationLock.lock();
+			globalCalibrationStruct.calibrationTrigger = true;
+			b->calibrationLock.unlock();
+			sendCodeResponse(i, SUCCESS, "");
+		}
+		else {
+			sendCodeResponse(i, ERROR, "glove not connected");
+		}
 		break;
 	}
 	case END_CALIBRATION: {
-		// no-op for now
+		// if glove is connected, and calibration has been started, lock calibration lock, trigger boolean value in shared struct
+		// and then wait to regain lock and then send back calibration info
+		if (gloveFound && globalCalibrationStruct.calibrationStarted) {
+			b->calibrationLock.lock();
+			globalCalibrationStruct.calibrationTrigger = true;
+			b->calibrationLock.unlock();
+
+			// add small wait to make sure we don't beat the read loop to get this lock
+			Sleep(100);
+			b->calibrationLock.lock();
+			// once we have gained the lock we have the calibration info we need to send back in the global calibration struct
+			char* payload = createCalibrationPayload(globalCalibrationStruct.ci);
+			b->calibrationLock.unlock();
+			if (payload == NULL) {
+				// error in the calibration
+				sendCodeResponse(i, ERROR, "Error calibrating");
+			}
+			else {
+				sendCodeResponse(i, SUCCESS, payload);
+				HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, payload);
+			}
+
+		}
+		else {
+			sendCodeResponse(i, ERROR, "Glove must be connected and calibration must have been started");
+		}
 		break;
 	}
 	case USE_SAVED_CALIBRATION_DATA: {
-		// no-op for now
+		// read filepath from request
+		char* filepath = &(requestBytes[1]); // start after request code value
+		for (int i = 0; i < BUFFER_SIZE - 2; i++) {
+			if (filepath[i] == '\n') {
+				// we have hit the end, mark it with \0
+				filepath[i] = '\0';
+			}
+		}
+		// now read calibration info from that file
+		CalibrationInfo* ci = (CalibrationInfo*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(CalibrationInfo));
+		CalibrationInfo* temp = ci;
+		getCalibrationInfoFromFile(filepath, ci);
+		if (ci == NULL) {
+			// we got an error trying to read the file, so we won't calibrate, and we will return an error to the client
+			sendCodeResponse(i, ERROR, "File format not correct");
+			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, temp);
+		}
+		else {
+			// add this to the global calibration struct, and turn the trigger on so that the background thread can use it
+			b->calibrationLock.lock();
+			globalCalibrationStruct.ci = *ci;
+			globalCalibrationStruct.calibrationTrigger = true;
+			b->calibrationLock.unlock();
+			sendCodeResponse(i, SUCCESS, ""); // send success back
+			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
+			ci = NULL;
+			temp = NULL;
+		}
 		break;
 	}
 	case IS_CALIBRATED: {
-		// no-op for now
+		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
+			sendCodeResponse(i, SUCCESS, "yes");
+		}
+		else {
+			sendCodeResponse(i, SUCCESS, "no");
+		}
 		break;
 	}
 	case IS_GLOVE_CONNECTED: {
@@ -364,6 +446,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			sendCodeResponse(i, SUCCESS, "yes");
 		else
 			sendCodeResponse(i, SUCCESS, "no");
+		break;
 	}
 	default: break;
 	}
@@ -462,8 +545,8 @@ int sendCodeResponse(SOCKET i, char code, const char *response) {
  * This is a TODO
  */
 void calibrate(BluetoothManager* b, CalibrationInfo& result) {
-	// Called in thread
-	// TODO: run b->listen() until some notification from main, and then store max and min in result
+// Called in thread
+// TODO: run b->listen() until some notification from main, and then store max and min in result
 }
 
 /*
@@ -483,12 +566,89 @@ void freeProcListener(SOCKET i) {
 }
 
 /*
- * errorCallback used to pass in to the bluetooth manager - when there is an error in connecting, 
+ * errorCallback used to pass in to the bluetooth manager - when there is an error in connecting,
  * we just try to reconnect
  */
 void bluetoothErrorHandler() {
 	// We set the global variable RETRY_FIND_GLOVE to true to tell our select loop to retry since we don't
 	// have access to the bluetooth manager in this function
 	gloveFound = false;
+	zeroCalibrationStruct();
 	RETRY_FIND_GLOVE = true;
+}
+
+void zeroCalibrationStruct() {
+	globalCalibrationStruct.from_saved_file = false;
+	globalCalibrationStruct.gloveCalibrated = false;
+	globalCalibrationStruct.ci = { {0, 0, 0, 0, 0}, {0, 0, 0 ,0 ,0} };
+	globalCalibrationStruct.calibrationTrigger = false;
+	globalCalibrationStruct.calibrationStarted = false;
+	memset(&(globalCalibrationStruct.savedFilePath[0]), '\0', MAX_FILEPATH_LENGTH);
+}
+
+// Used to read calibration data from a saved file
+// Returns NULL (in ci) if bad format file
+void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
+	ifstream infile(filepath);
+
+	if (infile.bad()) {
+		ci = NULL;
+		return;
+	}
+
+	char buf[BUFFER_SIZE];
+	memset(buf, '\0', BUFFER_SIZE);
+	int count = 0;
+	try {
+		// if correctly formatted, first line is space seperated min values, second line is space separated max values
+		infile.getline(buf, BUFFER_SIZE);
+		char* next_token;
+		char* token = strtok_s(buf, " \n", &next_token);
+		while (token != NULL && count < 5) {
+			int threadVal = atoi(token);
+			if (threadVal < 0) {
+				// not a number
+				ci = NULL;
+				return;
+			}
+			ci->minReading[count] = (uint16_t)threadVal;
+			count++;
+			token = strtok_s(buf, " \n", &next_token);
+		}
+
+		// all of min readings have been read - reset buffer, count and read the next line
+		memset(buf, '\0', BUFFER_SIZE);
+		count = 0;
+		infile.getline(buf, BUFFER_SIZE);
+		token = strtok_s(buf, " \n", &next_token);
+		while (token != NULL && count < 5) {
+			int threadVal = atoi(token);
+			if (threadVal < 0) {
+				// not a number
+				ci = NULL;
+				return;
+			}
+			ci->maxReading[count] = (uint16_t)threadVal;
+			count++;
+			token = strtok_s(buf, " \n", &next_token);
+		}
+	}
+	catch (std::ifstream::failure e) {
+		ci = NULL;
+		return;
+	}
+}
+
+// Returns the string format to save in a file for a given calibrationinfo struct
+char* createCalibrationPayload(CalibrationInfo ci) {
+	char* payload = (char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, BUFFER_SIZE);
+	// Min readings first, then max
+	if (sprintf_s(payload, BUFFER_SIZE, "%u %u %u %u %u\n%u %u %u %u %u\n",
+		ci.minReading[0], ci.minReading[1], ci.minReading[2], ci.minReading[3], ci.minReading[4],
+		ci.maxReading[0], ci.maxReading[1], ci.maxReading[2], ci.maxReading[3], ci.maxReading[4]) < 0) 
+	{
+		HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, payload);
+		return NULL;
+	}
+	return payload;
 }
