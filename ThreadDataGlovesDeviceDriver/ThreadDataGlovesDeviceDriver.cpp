@@ -64,7 +64,7 @@ void calibrate(BluetoothManager* b, CalibrationInfo &result);
 void freeProcListener(SOCKET i);
 void bluetoothErrorHandler();
 void zeroCalibrationStruct();
-void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci);
+bool getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci);
 char* createCalibrationPayload(CalibrationInfo ci);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
@@ -364,6 +364,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			b->calibrationLock.lock();
 			globalCalibrationStruct.calibrationTrigger = true;
 			b->calibrationLock.unlock();
+			printf("Calibration succesfully started\n");
 			sendCodeResponse(i, SUCCESS, "");
 		}
 		else {
@@ -372,6 +373,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		break;
 	}
 	case END_CALIBRATION: {
+		printf("About to end calibration \n");
 		// if glove is connected, and calibration has been started, lock calibration lock, trigger boolean value in shared struct
 		// and then wait to regain lock and then send back calibration info
 		if (gloveFound && globalCalibrationStruct.calibrationStarted) {
@@ -390,6 +392,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 				sendCodeResponse(i, ERROR, "Error calibrating");
 			}
 			else {
+				printf("Calibration set\n");
 				sendCodeResponse(i, SUCCESS, payload);
 				HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, payload);
 			}
@@ -401,37 +404,41 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		break;
 	}
 	case USE_SAVED_CALIBRATION_DATA: {
+		printf("Trying to calibrate with saved calibration data\n");
 		// read filepath from request
-		char* filepath = &(requestBytes[1]); // start after request code value
-		for (int i = 0; i < BUFFER_SIZE - 2; i++) {
+		char filepath[BUFFER_SIZE];
+		strncpy_s(filepath, BUFFER_SIZE, requestBytes + 1, BUFFER_SIZE);
+		for (int i = 0; i < strlen(filepath); i++) {
 			if (filepath[i] == '\n') {
-				// we have hit the end, mark it with \0
-				filepath[i] = '\0';
+				filepath[i] = '\0'; // need to remove the newline so that is not in the filepath
 			}
 		}
+
 		// now read calibration info from that file
 		CalibrationInfo* ci = (CalibrationInfo*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(CalibrationInfo));
-		CalibrationInfo* temp = ci;
-		getCalibrationInfoFromFile(filepath, ci);
-		if (ci == NULL) {
+		bool calibrationFileRead = getCalibrationInfoFromFile(filepath, ci);
+		if (!calibrationFileRead) {
 			// we got an error trying to read the file, so we won't calibrate, and we will return an error to the client
 			sendCodeResponse(i, ERROR, "File format not correct");
-			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, temp);
+			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
+			ci = NULL;
 		}
 		else {
 			// add this to the global calibration struct, and turn the trigger on so that the background thread can use it
 			b->calibrationLock.lock();
+			printf("Saving calibration data, min value 3 is %u \n", ci->minReading[2]);
 			globalCalibrationStruct.ci = *ci;
 			globalCalibrationStruct.calibrationTrigger = true;
+			globalCalibrationStruct.from_saved_file = true;
 			b->calibrationLock.unlock();
 			sendCodeResponse(i, SUCCESS, ""); // send success back
 			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
 			ci = NULL;
-			temp = NULL;
 		}
 		break;
 	}
 	case IS_CALIBRATED: {
+		printf("Received is calibrated request\n");
 		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
 			sendCodeResponse(i, SUCCESS, "yes");
 		}
@@ -540,15 +547,6 @@ int sendCodeResponse(SOCKET i, char code, const char *response) {
 	return SUCCESS_RET;
 }
 
-/* calibrate is used to get calibration values for the glove
- * current NO-OP
- * This is a TODO
- */
-void calibrate(BluetoothManager* b, CalibrationInfo& result) {
-// Called in thread
-// TODO: run b->listen() until some notification from main, and then store max and min in result
-}
-
 /*
  * freeProcListener is used to release a namedPipe when a client disconnects
  * Input: SOCKET i (client that disconnected)
@@ -587,13 +585,12 @@ void zeroCalibrationStruct() {
 }
 
 // Used to read calibration data from a saved file
-// Returns NULL (in ci) if bad format file
-void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
+// Returns false if bad format file
+bool getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
 	ifstream infile(filepath);
 
 	if (infile.bad()) {
-		ci = NULL;
-		return;
+		return false;
 	}
 
 	char buf[BUFFER_SIZE];
@@ -601,6 +598,10 @@ void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
 	int count = 0;
 	try {
 		// if correctly formatted, first line is space seperated min values, second line is space separated max values
+		/* File should look like:
+		1 2 3 4 5
+		1 2 3 4 5
+		*/
 		infile.getline(buf, BUFFER_SIZE);
 		char* next_token;
 		char* token = strtok_s(buf, " \n", &next_token);
@@ -608,12 +609,16 @@ void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
 			int threadVal = atoi(token);
 			if (threadVal < 0) {
 				// not a number
-				ci = NULL;
-				return;
+				return false;
 			}
 			ci->minReading[count] = (uint16_t)threadVal;
 			count++;
 			token = strtok_s(buf, " \n", &next_token);
+		}
+
+		// First line was not formatted correctly
+		if (count != 5) {
+			return false;
 		}
 
 		// all of min readings have been read - reset buffer, count and read the next line
@@ -625,17 +630,20 @@ void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
 			int threadVal = atoi(token);
 			if (threadVal < 0) {
 				// not a number
-				ci = NULL;
-				return;
+				return false;
 			}
 			ci->maxReading[count] = (uint16_t)threadVal;
 			count++;
 			token = strtok_s(buf, " \n", &next_token);
 		}
+
+		// First line was not formatted correctly
+		if (count != 5) {
+			return false;
+		}
 	}
 	catch (std::ifstream::failure e) {
-		ci = NULL;
-		return;
+		return false;
 	}
 }
 
@@ -643,7 +651,7 @@ void getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
 char* createCalibrationPayload(CalibrationInfo ci) {
 	char* payload = (char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, BUFFER_SIZE);
 	// Min readings first, then max
-	if (sprintf_s(payload, BUFFER_SIZE, "%u %u %u %u %u\n%u %u %u %u %u\n",
+	if (sprintf_s(payload, BUFFER_SIZE, "%u %u %u %u %u\n%u %u %u %u %u\n\0",
 		ci.minReading[0], ci.minReading[1], ci.minReading[2], ci.minReading[3], ci.minReading[4],
 		ci.maxReading[0], ci.maxReading[1], ci.maxReading[2], ci.maxReading[3], ci.maxReading[4]) < 0) 
 	{

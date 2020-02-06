@@ -33,11 +33,20 @@ Gesture *GestureRecognizer::recognize() {
 		return g;
 	}*/
 	// TODO: check if we are calibrated, then perform gesture recognition
+	printf("Circular buffer starting point length is %d", timeSeriesData->size());
 	return NULL;
 }
 
+void GestureRecognizer::zeroSavedCalibration() {
+	calibrationSet = false;
+	// clear buffer
+	timeSeriesData->clear();
+}
+
 void GestureRecognizer::setCalibrationWithData(CalibrationInfo data) {
-	// no-op fornow
+	calibrationSet = true;
+	calibrationInfo = data;
+	printf("Calibration data set in gesturerecognizer \n");
 }
 
 bool GestureRecognizer::isCalibrationSet() {

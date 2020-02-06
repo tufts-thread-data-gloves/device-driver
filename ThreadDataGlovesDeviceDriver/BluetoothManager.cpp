@@ -96,6 +96,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		}
 		catch (OutOfBoundsException^) {
 			// Error getting the characteristics or services
+			(*recognizer)->zeroSavedCalibration();
 			e();
 			return;
 		}
@@ -116,6 +117,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			if (device->ConnectionStatus == Bluetooth::BluetoothConnectionStatus::Disconnected) {
 				//device->Close();
 				printf("Device not connected\n");
+				(*recognizer)->zeroSavedCalibration();
 				e();
 				break;
 			}
@@ -126,6 +128,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			}
 			catch (Exception^) { 
 				// if device disconnected while reading, we catch that exception here
+				(*recognizer)->zeroSavedCalibration();
 				e();
 				break;
 			}
@@ -175,8 +178,10 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 					calLock->unlock();
 					if (globalCalibrationStruct->from_saved_file) {
 						// we have it in the calibrationinfo - this will set calibration
+						printf("Calibrating from saved file\n");
 						(*recognizer)->setCalibrationWithData(globalCalibrationStruct->ci);
 						globalCalibrationStruct->gloveCalibrated = true;
+						globalCalibrationStruct->from_saved_file = false; // reset it so there is no confusion in future calibration
 					}
 					else {
 						doingCalibration = true; // this will tell us to record data in future loop iterations
@@ -223,7 +228,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 				}
 			}
 
-			if (timeCount % 1000 == 0) {
+			if (timeCount % 100 == 0) {
 				Gesture *g = (*recognizer)->recognize();
 				if (g != NULL) c(g); // call callback listener
 			}
@@ -236,8 +241,14 @@ SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3]
 	// normalize values first
 	float newThreadValues[5];
 	for (int i = 0; i < 5; i++) {
-		newThreadValues[i] = (threadValues[i] - ci.minReading[i]) / (ci.maxReading[i] - ci.minReading[i]);
- 	}
+		// need to check for divide by zero - when calibration is zero for whatever reason
+		if (ci.maxReading[i] - ci.minReading[i] == 0) {
+			newThreadValues[i] = (float)threadValues[i];
+		}
+		else {
+			newThreadValues[i] = (threadValues[i] - ci.minReading[i]) / (ci.maxReading[i] - ci.minReading[i]);
+		}
+	}
 
 	SensorInfo SI = {
 		newThreadValues, // finger sensor array

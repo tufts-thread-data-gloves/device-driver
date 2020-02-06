@@ -37,6 +37,7 @@ public:
 	bool isCalibrationSet();
 	CalibrationInfo getCalibrationInfo();
 	void GestureRecognizer::addToTimeSeries(SensorInfo s);
+	void GestureRecognizer::zeroSavedCalibration();
 
 private:
 	bool calibrationSet;
