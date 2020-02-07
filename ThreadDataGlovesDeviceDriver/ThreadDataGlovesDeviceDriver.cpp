@@ -368,7 +368,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			sendCodeResponse(i, SUCCESS, "");
 		}
 		else {
-			sendCodeResponse(i, ERROR, "glove not connected");
+			sendCodeResponse(i, FAILURE, "glove not connected");
 		}
 		break;
 	}
@@ -389,7 +389,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			b->calibrationLock.unlock();
 			if (payload == NULL) {
 				// error in the calibration
-				sendCodeResponse(i, ERROR, "Error calibrating");
+				sendCodeResponse(i, FAILURE, "Error calibrating");
 			}
 			else {
 				printf("Calibration set\n");
@@ -399,7 +399,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 
 		}
 		else {
-			sendCodeResponse(i, ERROR, "Glove must be connected and calibration must have been started");
+			sendCodeResponse(i, FAILURE, "Glove must be connected and calibration must have been started");
 		}
 		break;
 	}
@@ -417,9 +417,11 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		// now read calibration info from that file
 		CalibrationInfo* ci = (CalibrationInfo*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(CalibrationInfo));
 		bool calibrationFileRead = getCalibrationInfoFromFile(filepath, ci);
+		printf("After calibration file read function, result was %d\n", calibrationFileRead);
 		if (!calibrationFileRead) {
 			// we got an error trying to read the file, so we won't calibrate, and we will return an error to the client
-			sendCodeResponse(i, ERROR, "File format not correct");
+			printf("Calibration file not read correctly, sending ERROR back\n");
+			sendCodeResponse(i, FAILURE, "File format not correct");
 			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
 			ci = NULL;
 		}
