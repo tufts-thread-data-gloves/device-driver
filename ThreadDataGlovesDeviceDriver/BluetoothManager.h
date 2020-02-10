@@ -23,7 +23,10 @@ public:
 	BluetoothManager(HANDLE *heapPtr);
 	~BluetoothManager();
 	void findGlove(listenCallback c, errorCallback e, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct);
-	void setConnected(bool c);
+	
+	// Temporary calls for building out our gesture recognizer
+	bool startRecording();
+	bool endRecording(char *filepath);
 
 private:
 	bool connected;

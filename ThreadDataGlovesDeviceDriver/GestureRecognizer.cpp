@@ -1,5 +1,9 @@
 #include "GestureRecognizer.h"
 #include "BluetoothManager.h"
+#include <iostream>
+#include <fstream>
+
+#define CELL_SIZE 250
 
 using namespace std; 
 
@@ -63,4 +67,52 @@ CalibrationInfo GestureRecognizer::getCalibrationInfo() {
  */
 void GestureRecognizer::addToTimeSeries(SensorInfo s) {
 	timeSeriesData->push_back(s);
+}
+
+// Temporary calls for recording gestures
+// Returns false if we cant start recording, true otherwise
+bool GestureRecognizer::startRecording() {
+	if (!isRecording && calibrationSet) {
+		startingPoint = timeSeriesData->end();
+		return true;
+	}
+	else {
+		return false; 
+	}
+}
+bool GestureRecognizer::endRecording(char* filepath) {
+	if (isRecording) {
+		// get current end, save all the data from startingPoint to current end in file asynchoronously to not slow down main program
+		ofstream outfile;
+		outfile.open(filepath, std::fstream::out | std::fstream::app);
+
+		if (outfile.bad()) {
+			return false;
+		}
+
+		boost::circular_buffer<SensorInfo>::iterator end = timeSeriesData->end();
+		for (boost::circular_buffer<SensorInfo>::iterator i; i <= end; i++) {
+			// write each sensor info to a "cell" on a line in the filepath
+			// form string to write
+			char sensorInfoString[CELL_SIZE];
+			int n = sprintf_s(sensorInfoString, CELL_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f|",
+				i->finger_sensors[0], i->finger_sensors[1], i->finger_sensors[2], i->finger_sensors[3], i->finger_sensors[4],
+				i->accelerometer[0], i->accelerometer[1], i->accelerometer[2],
+				i->magnometer[0], i->magnometer[1], i->magnometer[2]);
+			if (n < 0) return false;
+
+			// change last character from | to null character, so delimiting is correct
+			sensorInfoString[n - 1] = ' ';
+
+			// now write it to the file
+			outfile.write(sensorInfoString, n);
+		}
+		// at the end, write a newline
+		outfile.write("\n", 1);
+
+		return true;
+	}
+	else {
+		return false;
+	}
 }

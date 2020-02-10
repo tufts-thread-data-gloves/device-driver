@@ -39,6 +39,15 @@ BluetoothManager::~BluetoothManager() {
 	// no-op
 }
 
+// TEMPORARY CALLS FOR GESTURES
+bool BluetoothManager::startRecording() {
+	return recognizer->startRecording();
+}
+
+bool BluetoothManager::endRecording(char *filepath) {
+	return recognizer->endRecording(filepath);
+}
+
 /*
  * findGlove called to start the process of connecting with the glove over bluetooth
  * There is no timeout, so this will go until it finds the glove
