@@ -1,4 +1,5 @@
 #include "BluetoothManager.h"
+#include "ThreadKalman.hpp"
 #include "stdafx.h"
 #include <iostream>
 #include <Windows.Foundation.h>
@@ -67,6 +68,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 	CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
 	CLSIDFromString(L"{1b9b0001-3e7e-4c78-93b3-0f86540298f1}", &dataCharGUID);
 
+	static ThreadKalman test1 = ThreadKalman(1, 5, 8, 1, 1, 500);
 
 	auto device = co_await Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetoothAddress);
 	printf("Device found \n");
@@ -152,18 +154,19 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			uint16_t thread4 = *(((uint16_t*)gloveData) + 15);
 			uint16_t thread5 = *(((uint16_t*)gloveData) + 16);
 
-			//auto dataReaderY = Windows::Storage::Streams::DataReader::FromBuffer(y);
-			//float yVal = dataReaderY->ReadSingle();
-			//auto dataReaderZ = Windows::Storage::Streams::DataReader::FromBuffer(z);
-			//float zVal = dataReaderZ->ReadSingle();
+			/*printf("accelerometer values are  %2.2f, %2.2f, %2.2f\n", axval, ayval, azval);
+			printf("magnetometer values are %3.3f, %3.3f, %3.3f\n", mxval, myval, mzval);
+			printf("thread values are %u, %u, %u, %u, %u\n", thread1, thread2, thread3, thread4, thread5);*/
 
-			printf("Accelerometer values are  %2.2f, %2.2f, %2.2f\n", axVal, ayVal, azVal);
-			printf("Magnetometer values are %3.3f, %3.3f, %3.3f\n", mxVal, myVal, mzVal);
-			printf("Thread values are %u, %u, %u, %u, %u\n", thread1, thread2, thread3, thread4, thread5);
+			test1.update(thread1);
+			uint16_t k_thread1 = test1.getValue();
+
+			fprintf(stderr, "thread reading: %u, filtered reading: %u\n", thread1, k_thread1);
+			fprintf(stderr, "error: %f\n", test1.getError());
 
 			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
 			// recognizer to try to find a gesture
-			SensorInfo s = newSensorInfo(xVal, yVal, zVal);
+			SensorInfo s = newSensorInfo(axVal, ayVal, azVal);
 			(*recognizer)->addToTimeSeries(s);
 
 			if (timeCount % 1000 == 0) {
