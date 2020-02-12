@@ -47,7 +47,7 @@ struct BufferHolder {
 
 // Request codes sent by applications to the device driver over the socket
 enum RequestCodes {
-	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED, IS_GLOVE_CONNECTED, START_RECORDING, END_RECORDING
+	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED, IS_GLOVE_CONNECTED, START_RECORDING, END_RECORDING=11
 };
 
 // Return codes used by device driver when sending info back to clients
@@ -458,6 +458,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		break;
 	}
 	case START_RECORDING: {
+		printf("In start recording endpoint \n");
 		// This is a temporary endpoint that will be removed once we develop the gestural recognition
 		// This will tell the bluetooth manager to start "recording" our normalized data - given that we are connected and calibrated
 		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
@@ -471,8 +472,10 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		else {
 			sendCodeResponse(i, FAILURE, "Need to be connected and calibrated");
 		}
+		break;
 	}
 	case END_RECORDING: {
+		printf("In end recording endpoint\n");
 		// We expect a payload with a filepath here
 		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
 			// read filepath from request
@@ -484,6 +487,8 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 				}
 			}
 
+			printf("Filepath is %s\n", filepath);
+
 			if (b->endRecording(filepath)) {
 				sendCodeResponse(i, SUCCESS, "");
 			}
@@ -494,6 +499,7 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		else {
 			sendCodeResponse(i, FAILURE, "Need to be connected and calibrated");
 		}
+		break;
 	}
 	default: break;
 	}

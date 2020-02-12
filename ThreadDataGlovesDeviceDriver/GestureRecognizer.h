@@ -22,9 +22,9 @@ struct Gesture {
 } typedef Gesture;
 
 struct SensorInfo {
-	float *finger_sensors; // array of 5
-	float *accelerometer; // array of 3
-	float *magnometer; // array of 3
+	float finger_sensors[5]; // array of 5
+	float accelerometer[3]; // array of 3
+	float magnometer[3]; // array of 3
 } typedef SensorInfo;
 
 class GestureRecognizer
@@ -51,7 +51,8 @@ private:
 
 	// Temporary variables for recording gestures
 	bool isRecording;
-	boost::circular_buffer<SensorInfo>::iterator startingPoint;
+	int numberOfElementsRecorded;
+	//boost::circular_buffer<SensorInfo>::iterator startingPoint;
 
 };
 

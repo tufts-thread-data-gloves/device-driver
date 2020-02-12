@@ -66,14 +66,17 @@ CalibrationInfo GestureRecognizer::getCalibrationInfo() {
  * Input: SensorInfo struct
  */
 void GestureRecognizer::addToTimeSeries(SensorInfo s) {
+	printf("Thread values 1 and 2 are %4.2f, %4.2f before entering time series buffer\n", s.finger_sensors[0], s.finger_sensors[1]);
 	timeSeriesData->push_back(s);
+	if (isRecording) numberOfElementsRecorded++;
 }
 
 // Temporary calls for recording gestures
 // Returns false if we cant start recording, true otherwise
 bool GestureRecognizer::startRecording() {
 	if (!isRecording && calibrationSet) {
-		startingPoint = timeSeriesData->end();
+		numberOfElementsRecorded = 0;
+		isRecording = true;
 		return true;
 	}
 	else {
@@ -87,19 +90,33 @@ bool GestureRecognizer::endRecording(char* filepath) {
 		outfile.open(filepath, std::fstream::out | std::fstream::app);
 
 		if (outfile.bad()) {
+			printf("Could not open file\n");
 			return false;
 		}
 
-		boost::circular_buffer<SensorInfo>::iterator end = timeSeriesData->end();
-		for (boost::circular_buffer<SensorInfo>::iterator i; i <= end; i++) {
+		printf("We recorded %d elements\n", numberOfElementsRecorded);
+		int endIndex = timeSeriesData->end() - timeSeriesData->begin();
+		for (int i = endIndex - numberOfElementsRecorded; i < endIndex; i++) {
 			// write each sensor info to a "cell" on a line in the filepath
 			// form string to write
 			char sensorInfoString[CELL_SIZE];
+			SensorInfo elt;
+			try {
+				elt = timeSeriesData->at(i);
+			}
+			catch (...) {
+				printf("Exception caught \n");
+				return false;
+			}
+			printf("Got an elt\n");
 			int n = sprintf_s(sensorInfoString, CELL_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f|",
-				i->finger_sensors[0], i->finger_sensors[1], i->finger_sensors[2], i->finger_sensors[3], i->finger_sensors[4],
-				i->accelerometer[0], i->accelerometer[1], i->accelerometer[2],
-				i->magnometer[0], i->magnometer[1], i->magnometer[2]);
-			if (n < 0) return false;
+				elt.finger_sensors[0], elt.finger_sensors[1], elt.finger_sensors[2], elt.finger_sensors[3], elt.finger_sensors[4],
+				elt.accelerometer[0], elt.accelerometer[1], elt.accelerometer[2],
+				elt.magnometer[0], elt.magnometer[1], elt.magnometer[2]);
+			if (n < 0) {
+				printf("Could not do sprintf_s \n");
+				return false;
+			}
 
 			// change last character from | to null character, so delimiting is correct
 			sensorInfoString[n - 1] = ' ';
@@ -110,9 +127,12 @@ bool GestureRecognizer::endRecording(char* filepath) {
 		// at the end, write a newline
 		outfile.write("\n", 1);
 
+		printf("Should have completed writing to file\n");
+		isRecording = false;
 		return true;
 	}
 	else {
+		printf("Was not recording \n");
 		return false;
 	}
 }

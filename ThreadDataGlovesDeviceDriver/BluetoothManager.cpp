@@ -147,9 +147,9 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			byte gloveData[34];
 			for (int i = 0; i < 34; i++) {
 				gloveData[i] = dataReader->ReadByte();
-				//printf("%u ||", gloveData[i]);
+				printf("%u ||", gloveData[i]);
 			}
-			//printf("\n");
+			printf("\n");
 			float axVal = *(((float*)gloveData));
 			float ayVal = *(((float*)gloveData) + 1);
 			float azVal = *(((float*)gloveData) + 2);
@@ -216,6 +216,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 					
 					// save  min and max values
 					CalibrationInfo ci = newCalibrationInfo(minValues, maxValues);
+					printf("Calibration data save is for min values %u, %u, %u, %u, %u", minValues[0], minValues[1], minValues[2], minValues[3], minValues[4]);
 					(*recognizer)->setCalibrationWithData(ci);
 					globalCalibrationStruct->gloveCalibrated = true;
 
@@ -255,15 +256,15 @@ SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3]
 			newThreadValues[i] = (float)threadValues[i];
 		}
 		else {
-			newThreadValues[i] = (threadValues[i] - ci.minReading[i]) / (ci.maxReading[i] - ci.minReading[i]);
+			newThreadValues[i] = ((float)threadValues[i] - (float)ci.minReading[i]) / ((float)ci.maxReading[i] - (float)ci.minReading[i]);
 		}
 	}
 
-	SensorInfo SI = {
-		newThreadValues, // finger sensor array
-		accelerometerValues, // accelerometer array
-		magnometerValues // magnometer array
-	};
+	printf("Normalized thread values are %4.2f, %4.2f, %4.2f, %4.2f, %4.2f\n", newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]);
+
+	SensorInfo SI = { {newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]},
+					{accelerometerValues[0], accelerometerValues[1], accelerometerValues[2]},
+					{magnometerValues[0], magnometerValues[1], magnometerValues[2]} };
 	return SI;
 }
 
