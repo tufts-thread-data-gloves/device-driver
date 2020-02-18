@@ -37,7 +37,6 @@ Gesture *GestureRecognizer::recognize() {
 		return g;
 	}*/
 	// TODO: check if we are calibrated, then perform gesture recognition
-	printf("Circular buffer starting point length is %d", timeSeriesData->size());
 	return NULL;
 }
 
@@ -66,7 +65,6 @@ CalibrationInfo GestureRecognizer::getCalibrationInfo() {
  * Input: SensorInfo struct
  */
 void GestureRecognizer::addToTimeSeries(SensorInfo s) {
-	printf("Thread values 1 and 2 are %4.2f, %4.2f before entering time series buffer\n", s.finger_sensors[0], s.finger_sensors[1]);
 	timeSeriesData->push_back(s);
 	if (isRecording) numberOfElementsRecorded++;
 }
@@ -108,7 +106,6 @@ bool GestureRecognizer::endRecording(char* filepath) {
 				printf("Exception caught \n");
 				return false;
 			}
-			printf("Got an elt\n");
 			int n = sprintf_s(sensorInfoString, CELL_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f|",
 				elt.finger_sensors[0], elt.finger_sensors[1], elt.finger_sensors[2], elt.finger_sensors[3], elt.finger_sensors[4],
 				elt.accelerometer[0], elt.accelerometer[1], elt.accelerometer[2],

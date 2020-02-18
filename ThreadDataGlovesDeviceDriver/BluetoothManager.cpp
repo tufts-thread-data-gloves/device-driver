@@ -20,7 +20,8 @@ using namespace Platform;
 using namespace Windows::Devices;
 
 concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
-	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, std::mutex* calLock);
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, 
+	std::mutex* calLock, std::mutex* waitLock);
 SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3], uint16_t threadValues[5], CalibrationInfo ci);
 CalibrationInfo newCalibrationInfo(uint16_t minReading[5], uint16_t maxReading[5]);
 
@@ -28,7 +29,9 @@ CalibrationInfo newCalibrationInfo(uint16_t minReading[5], uint16_t maxReading[5
 GUID serviceUUID;
 GUID dataCharGUID;
 
+// instantiate the locks
 std::mutex BluetoothManager::calibrationLock;
+std::mutex BluetoothManager::waitingForCalibrationLock;
 
 BluetoothManager::BluetoothManager(HANDLE *heapPtr) {
 	connected = false; // this isn't used for anything currently
@@ -67,14 +70,15 @@ void BluetoothManager::findGlove(listenCallback c, errorCallback e, bool *global
 			if (wcscmp(localName->Begin(), L"Salmon Glove") == 0) {
 				printf("Salmon glove found! %llu\n", eventArgs->BluetoothAddress);
 				bleAdvertisementWatcher->Stop();
-				connectToGlove(eventArgs->BluetoothAddress, c, e, &recognizer, globalGloveFound, globalCalibrationStruct, &calibrationLock);
+				connectToGlove(eventArgs->BluetoothAddress, c, e, &recognizer, globalGloveFound, globalCalibrationStruct, &calibrationLock, &waitingForCalibrationLock);
 			}
 		});
 	bleAdvertisementWatcher->Start(); // this starts the async process above
 }
 
 concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, listenCallback c, 
-	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, std::mutex *calLock) {
+	errorCallback e, GestureRecognizer **recognizer, bool *globalGloveFound, CalibrationStruct *globalCalibrationStruct, 
+	std::mutex *calLock, std::mutex *waitLock) {
 
 	auto _ = CLSIDFromString(L"{1b9b0000-3e7e-4c78-93b3-0f86540298f1}", &serviceUUID); // this is the service UUID for the salmon glove
 	_ = CLSIDFromString(L"{1b9b0001-3e7e-4c78-93b3-0f86540298f1}", &dataCharGUID);
@@ -194,6 +198,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 					}
 					else {
 						doingCalibration = true; // this will tell us to record data in future loop iterations
+						waitLock->lock(); // lock this and release when we get the calibration is over trigger from the main thread
 						globalCalibrationStruct->calibrationStarted = true;
 						minValues[0] = thread1;
 						minValues[1] = thread2;
@@ -210,6 +215,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 				else if (globalCalibrationStruct->calibrationTrigger && doingCalibration) {
 					// this is when we stop calibrating and save the calibration data
 					calLock->lock();
+					waitLock->unlock(); // we have acquired calLock, so now release waitLock
 					doingCalibration = false;
 					globalCalibrationStruct->calibrationTrigger = false;
 					globalCalibrationStruct->calibrationStarted = false;

@@ -19,6 +19,7 @@ class BluetoothManager
 {
 public:
 	static std::mutex calibrationLock;
+	static std::mutex waitingForCalibrationLock;
 
 	BluetoothManager(HANDLE *heapPtr);
 	~BluetoothManager();

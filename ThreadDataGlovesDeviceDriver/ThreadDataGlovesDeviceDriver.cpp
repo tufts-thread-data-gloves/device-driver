@@ -381,8 +381,8 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			globalCalibrationStruct.calibrationTrigger = true;
 			b->calibrationLock.unlock();
 
-			// add small wait to make sure we don't beat the read loop to get this lock
-			Sleep(100);
+			b->waitingForCalibrationLock.lock(); // when we acquire this lock, we know that the background read loop for bluetooth has received the calibration trigger
+			b->waitingForCalibrationLock.unlock(); // immediately unlock so we can recalibrate at any point
 			b->calibrationLock.lock();
 			// once we have gained the lock we have the calibration info we need to send back in the global calibration struct
 			char* payload = createCalibrationPayload(globalCalibrationStruct.ci);
