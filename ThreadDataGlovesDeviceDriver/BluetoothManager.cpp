@@ -109,6 +109,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		}
 		catch (OutOfBoundsException^) {
 			// Error getting the characteristics or services
+			delete device;
 			(*recognizer)->zeroSavedCalibration();
 			e();
 			return;
@@ -141,6 +142,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			}
 			catch (Exception^) { 
 				// if device disconnected while reading, we catch that exception here
+				delete device;
 				(*recognizer)->zeroSavedCalibration();
 				e();
 				break;
