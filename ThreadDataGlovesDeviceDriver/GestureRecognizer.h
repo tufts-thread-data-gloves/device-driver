@@ -1,6 +1,9 @@
 #pragma once
 #include <Windows.h>
 #include <boost/circular_buffer.hpp>
+#include <thread>
+#include <queue>
+#include <mutex>
 #define TIME_SERIES_SIZE 10000
 
 // CalibrationInfo stores max reading from strain sensors and min reading
@@ -36,12 +39,16 @@ public:
 	void setCalibrationWithData(CalibrationInfo data);
 	bool isCalibrationSet();
 	CalibrationInfo getCalibrationInfo();
-	void GestureRecognizer::addToTimeSeries(SensorInfo s);
-	void GestureRecognizer::zeroSavedCalibration();
+	void addToTimeSeries(SensorInfo s);
+	void zeroSavedCalibration();
+	void IORecordingThreadFunc();
 
 	// Temporary calls for recording gestures
 	bool startRecording();
 	bool endRecording(char *filepath);
+	// temporary lock for recording
+	static std::mutex recordingOnLock;
+	static std::mutex queueLock;
 
 private:
 	bool calibrationSet;
@@ -52,7 +59,6 @@ private:
 	// Temporary variables for recording gestures
 	bool isRecording;
 	int numberOfElementsRecorded;
-	//boost::circular_buffer<SensorInfo>::iterator startingPoint;
-
+	std::queue<SensorInfo> recordingQueue;
 };
 

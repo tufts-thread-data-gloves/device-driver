@@ -3,17 +3,24 @@
 #include <iostream>
 #include <fstream>
 
-#define CELL_SIZE 250
+#define LINE_SIZE 250
 
 using namespace std; 
 
 /*
-FOR NOW: this is a mock class
+Gesture recognizer is not yet done, for now this class is meant to hold the time series data and record gestures
 */
+
+std::mutex GestureRecognizer::recordingOnLock;
+std::mutex GestureRecognizer::queueLock;
 
 GestureRecognizer::GestureRecognizer(HANDLE *heapPtr) {
 	heapPtr = heapPtr;
 	timeSeriesData = new boost::circular_buffer<SensorInfo>(TIME_SERIES_SIZE);
+
+	// Initialize thread that is constantly recording data and timestamps
+	std::thread IORecordingThread(&GestureRecognizer::IORecordingThreadFunc, this);
+	IORecordingThread.detach();
 }
 
 GestureRecognizer::~GestureRecognizer() {
@@ -66,7 +73,14 @@ CalibrationInfo GestureRecognizer::getCalibrationInfo() {
  */
 void GestureRecognizer::addToTimeSeries(SensorInfo s) {
 	timeSeriesData->push_back(s);
-	if (isRecording) numberOfElementsRecorded++;
+	if (isRecording) {
+		numberOfElementsRecorded++;
+	}
+	else {
+		queueLock.lock();
+		recordingQueue.push(s);
+		queueLock.unlock();
+	}
 }
 
 // Temporary calls for recording gestures
@@ -75,6 +89,7 @@ bool GestureRecognizer::startRecording() {
 	if (!isRecording && calibrationSet) {
 		numberOfElementsRecorded = 0;
 		isRecording = true;
+		recordingOnLock.lock();
 		return true;
 	}
 	else {
@@ -95,9 +110,11 @@ bool GestureRecognizer::endRecording(char* filepath) {
 		printf("We recorded %d elements\n", numberOfElementsRecorded);
 		int endIndex = timeSeriesData->end() - timeSeriesData->begin();
 		for (int i = endIndex - numberOfElementsRecorded; i < endIndex; i++) {
+			// write each sensor info to a line on the filepath - each gets its own cell
+
 			// write each sensor info to a "cell" on a line in the filepath
 			// form string to write
-			char sensorInfoString[CELL_SIZE];
+			char sensorInfoString[LINE_SIZE];
 			SensorInfo elt;
 			try {
 				elt = timeSeriesData->at(i);
@@ -106,7 +123,7 @@ bool GestureRecognizer::endRecording(char* filepath) {
 				printf("Exception caught \n");
 				return false;
 			}
-			int n = sprintf_s(sensorInfoString, CELL_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f|",
+			int n = sprintf_s(sensorInfoString, LINE_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f\n",
 				elt.finger_sensors[0], elt.finger_sensors[1], elt.finger_sensors[2], elt.finger_sensors[3], elt.finger_sensors[4],
 				elt.accelerometer[0], elt.accelerometer[1], elt.accelerometer[2],
 				elt.magnometer[0], elt.magnometer[1], elt.magnometer[2]);
@@ -115,21 +132,66 @@ bool GestureRecognizer::endRecording(char* filepath) {
 				return false;
 			}
 
-			// change last character from | to null character, so delimiting is correct
-			sensorInfoString[n - 1] = ' ';
-
 			// now write it to the file
 			outfile.write(sensorInfoString, n);
 		}
 		// at the end, write a newline
 		outfile.write("\n", 1);
 
-		printf("Should have completed writing to file\n");
+		//printf("Should have completed writing to file\n");
 		isRecording = false;
+		recordingOnLock.unlock();
 		return true;
 	}
 	else {
 		printf("Was not recording \n");
 		return false;
+	}
+}
+
+void GestureRecognizer::IORecordingThreadFunc() {
+	// open file that we are going to write to
+	ofstream outfile;
+	outfile.open("C:\\Users\\Aaron\\source\\repos\\python-api-device-driver\\gestureRecordings\\noiseRecording.txt", std::fstream::out | std::fstream::app);
+
+	if (outfile.bad()) {
+		printf("Could not open file\n");
+		return;
+	}
+
+
+	while (true) {
+		// acquire lock
+		// check if we are recording or not
+		// write to the file
+
+		recordingOnLock.lock();
+		if (isRecording) {
+			recordingOnLock.unlock();
+			continue;
+		}
+
+		// get data to write
+		queueLock.lock();
+		if (recordingQueue.empty()) {
+			queueLock.unlock();
+			recordingOnLock.unlock();
+			continue;
+		}
+		else {
+			SensorInfo elt = recordingQueue.front();
+			recordingQueue.pop();
+			queueLock.unlock();
+
+			char sensorInfoString[LINE_SIZE];
+			int n = sprintf_s(sensorInfoString, LINE_SIZE, "%4.2f,%4.2f,%4.2f,%4.2f,%4.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f,%5.2f\n",
+				elt.finger_sensors[0], elt.finger_sensors[1], elt.finger_sensors[2], elt.finger_sensors[3], elt.finger_sensors[4],
+				elt.accelerometer[0], elt.accelerometer[1], elt.accelerometer[2],
+				elt.magnometer[0], elt.magnometer[1], elt.magnometer[2]);
+
+			// now write it to the file
+			outfile.write(sensorInfoString, n);
+		}
+		recordingOnLock.unlock();
 	}
 }

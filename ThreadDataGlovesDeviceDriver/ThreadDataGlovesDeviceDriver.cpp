@@ -181,7 +181,7 @@ int main(int argc, char *argv[])
 			perror("select");
 		}
 		else if (ret == 0) {
-			printf("Timeout occured\n");
+			//printf("Timeout occured\n");
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
 				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);

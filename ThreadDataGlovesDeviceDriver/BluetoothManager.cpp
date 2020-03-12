@@ -153,9 +153,9 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			byte gloveData[34];
 			for (int i = 0; i < 34; i++) {
 				gloveData[i] = dataReader->ReadByte();
-				printf("%u ||", gloveData[i]);
+				//printf("%u ||", gloveData[i]);
 			}
-			printf("\n");
+			//printf("\n");
 			float axVal = *(((float*)gloveData));
 			float ayVal = *(((float*)gloveData) + 1);
 			float azVal = *(((float*)gloveData) + 2);
@@ -169,9 +169,9 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			uint16_t thread5 = *(((uint16_t*)gloveData) + 16);
 
 
-			printf("Accelerometer values are  %2.2f, %2.2f, %2.2f\n", axVal, ayVal, azVal);
-			printf("Magnetometer values are %3.3f, %3.3f, %3.3f\n", mxVal, myVal, mzVal);
-			printf("Thread values are %u, %u, %u, %u, %u\n", thread1, thread2, thread3, thread4, thread5);
+			//printf("Accelerometer values are  %2.2f, %2.2f, %2.2f\n", axVal, ayVal, azVal);
+			//printf("Magnetometer values are %3.3f, %3.3f, %3.3f\n", mxVal, myVal, mzVal);
+			//printf("Thread values are %u, %u, %u, %u, %u\n", thread1, thread2, thread3, thread4, thread5);
 
 			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
 			// recognizer to try to find a gesture
@@ -268,7 +268,7 @@ SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3]
 		}
 	}
 
-	printf("Normalized thread values are %4.2f, %4.2f, %4.2f, %4.2f, %4.2f\n", newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]);
+	//printf("Normalized thread values are %4.2f, %4.2f, %4.2f, %4.2f, %4.2f\n", newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]);
 
 	SensorInfo SI = { {newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]},
 					{accelerometerValues[0], accelerometerValues[1], accelerometerValues[2]},
