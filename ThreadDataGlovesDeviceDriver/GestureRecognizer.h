@@ -27,7 +27,7 @@ struct Gesture {
 struct SensorInfo {
 	float finger_sensors[5]; // array of 5
 	float accelerometer[3]; // array of 3
-	float magnometer[3]; // array of 3
+	float gyroscope[3]; // array of 3
 } typedef SensorInfo;
 
 class GestureRecognizer
@@ -52,6 +52,7 @@ public:
 
 private:
 	bool calibrationSet;
+	bool inGesture;
 	CalibrationInfo calibrationInfo;
 	HANDLE* heapPtr;
 	boost::circular_buffer<SensorInfo> *timeSeriesData;

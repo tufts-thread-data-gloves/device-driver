@@ -124,9 +124,6 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 		uint16_t maxValues[5] = { 0 };
 
 		for (;;) {
-			timeCount += 1;
-			if (timeCount > TIME_SERIES_SIZE) timeCount = 0;
-			
 			// detect if bluetooth device disconnected
 			if (device->ConnectionStatus == Bluetooth::BluetoothConnectionStatus::Disconnected) {
 				//device->Close();
@@ -176,13 +173,21 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 			// add sensor data to time series, if we are at a certain stride of time, ask gesture 
 			// recognizer to try to find a gesture
 			float accelerometerValues[3] = { axVal, ayVal, azVal };
-			float magnometerValues[3] = { mxVal, myVal,  mzVal };
+			float gyroscopeValues[3] = { mxVal, myVal,  mzVal };
 			uint16_t threadValues[5] = { thread1, thread2, thread3, thread4, thread5 };
 
 			if ((*recognizer)->isCalibrationSet()) {
+				timeCount += 1;
+				if (timeCount > TIME_SERIES_SIZE) timeCount = 0;
+
 				// scale sensor info by calibration info
-				SensorInfo s = newSensorInfo(accelerometerValues, magnometerValues, threadValues, (*recognizer)->getCalibrationInfo());
+				SensorInfo s = newSensorInfo(accelerometerValues, gyroscopeValues, threadValues, (*recognizer)->getCalibrationInfo());
 				(*recognizer)->addToTimeSeries(s);
+
+				if (timeCount % 2 == 0) {
+					Gesture* g = (*recognizer)->recognize();
+					if (g != NULL) c(g); // call callback listener
+				}
 			}
 			else {
 				// are we currently calibrating?
@@ -197,6 +202,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 						(*recognizer)->setCalibrationWithData(globalCalibrationStruct->ci);
 						globalCalibrationStruct->gloveCalibrated = true;
 						globalCalibrationStruct->from_saved_file = false; // reset it so there is no confusion in future calibration
+						timeCount = 0;
 					}
 					else {
 						doingCalibration = true; // this will tell us to record data in future loop iterations
@@ -227,6 +233,7 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 					printf("Calibration data save is for min values %u, %u, %u, %u, %u", minValues[0], minValues[1], minValues[2], minValues[3], minValues[4]);
 					(*recognizer)->setCalibrationWithData(ci);
 					globalCalibrationStruct->gloveCalibrated = true;
+					timeCount = 0;
 
 					// add it to the global struct so main thread can use the calibration data
 					globalCalibrationStruct->ci = ci;
@@ -245,17 +252,12 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 					maxValues[4] = thread5 > maxValues[4] ? thread5 : maxValues[4];
 				}
 			}
-
-			if (timeCount % 100 == 0) {
-				Gesture *g = (*recognizer)->recognize();
-				if (g != NULL) c(g); // call callback listener
-			}
 		}
 	}
 }
 
 // Form sensor info struct from all the accelerometer, magnometer and thread values
-SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3], uint16_t threadValues[5], CalibrationInfo ci) {
+SensorInfo newSensorInfo(float accelerometerValues[3], float gyroscopeValues[3], uint16_t threadValues[5], CalibrationInfo ci) {
 	// normalize values first
 	float newThreadValues[5];
 	for (int i = 0; i < 5; i++) {
@@ -272,7 +274,7 @@ SensorInfo newSensorInfo(float accelerometerValues[3], float magnometerValues[3]
 
 	SensorInfo SI = { {newThreadValues[0], newThreadValues[1], newThreadValues[2], newThreadValues[3], newThreadValues[4]},
 					{accelerometerValues[0], accelerometerValues[1], accelerometerValues[2]},
-					{magnometerValues[0], magnometerValues[1], magnometerValues[2]} };
+					{gyroscopeValues[0], gyroscopeValues[1], gyroscopeValues[2]} };
 	return SI;
 }
 

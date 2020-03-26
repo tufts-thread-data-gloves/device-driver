@@ -277,7 +277,8 @@ int main(int argc, char *argv[])
  * Takes in SensorInfo struct, sends gesture data over all open named pipes.
  */
 void gestureListener(Gesture *g) {
-	printf("Gesture received! \n");
+	printf("IN GESTURE LISTENER\n");
+	printf("Gesture received! Gesture is %d, with xyz of %d,%d,%d\n", g->gestureCode, g->x, g->y, g->z);
 
 	// make payload
 	TCHAR buffer[128] = { L'0' };
