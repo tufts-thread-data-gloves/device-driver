@@ -5,17 +5,27 @@
 
 #define LINE_SIZE 250
 
+using namespace std;
+
 // constants for thresholding when the glove is in a fist (these are experimental values)
 const float fingerOneThresh = 0.4035;
-const float fingerTwoThresh = 0.5819;
-const float fingerThreeThresh = 0.5474;
+const float fingerTwoThresh = 0.4;
+const float fingerThreeThresh = 0.38;
+const float stableAxis = 185;
+const float accelerometerUpperThreshZ = 1.3;
+const float accelerometerLowerThreshZ = 0.6;
+const float accelerometerUpperThreshY = -0.1;
+const float accelerometerLowerThreshY = -0.8;
+
 
 bool fingersInFist(SensorInfo elt);
 bool outOfFist(SensorInfo eltA, SensorInfo eltB);
 bool closeTo(float a, float b);
 bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture* gesture);
-
-using namespace std; 
+int sign(int x);
+bool gyroscopeStable(const char* axes, SensorInfo eltA, SensorInfo eltB);
+bool accelerometerStable(SensorInfo eltA, SensorInfo eltB);
+bool inPan(const char* axis, SensorInfo eltA, SensorInfo eltB);
 
 /*
 Gesture recognizer is not yet done, for now this class is meant to hold the time series data and record gestures
@@ -75,8 +85,12 @@ Gesture *GestureRecognizer::recognize() {
 		else {
 			// check if we are in a gesture (i.e. last two timestamps are above the threshold for the first three fingers)
 			int endIndex = timeSeriesData->end() - timeSeriesData->begin();
-			printf("Fingers 1,2,3 are %4.2f, %4.2f, %4.f\n", timeSeriesData->at(endIndex - 1).finger_sensors[0], 
+			printf("Fingers 1,2,3 are %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).finger_sensors[0], 
 				timeSeriesData->at(endIndex - 1).finger_sensors[1], timeSeriesData->at(endIndex - 1).finger_sensors[2]);
+			printf("accelerometer is %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).accelerometer[0],
+				timeSeriesData->at(endIndex - 1).accelerometer[1], timeSeriesData->at(endIndex - 1).accelerometer[2]);
+			printf("gyroscope is %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).gyroscope[0],
+				timeSeriesData->at(endIndex - 1).gyroscope[1], timeSeriesData->at(endIndex - 1).gyroscope[2]);
 			if (fingersInFist(timeSeriesData->at(endIndex - 1)) && fingersInFist(timeSeriesData->at(endIndex - 2))) {
 				printf("Fingers in fist\n");
 				inGesture = true;
@@ -262,6 +276,118 @@ bool outOfFist(SensorInfo eltA, SensorInfo eltB) {
 * Important Note: All gestures must start with a fist, with the palm facing down so the accelerometer has the expected vector measurement.
 */
 bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
+	// second pass on decision tree
+	// decide whether we are in possible rotate or pan first using gyroscope
+	if (gyroscopeStable("any", eltA, eltB)) {
+		if (accelerometerStable(eltA, eltB)) {
+			// no gesture
+			return false;
+		}
+		else {
+			// might be a pan - pan can be on z axis (up or down), or y axis (left or right)
+			// check Z axis first
+			if (inPan("z", eltA, eltB)) {
+				// pan gesture made - at least z axis
+				gesture->gestureCode = PAN;
+				gesture->x = 0;
+				gesture->z = (eltA.accelerometer[2] > accelerometerUpperThreshZ || eltB.accelerometer[2] > accelerometerUpperThreshZ) ? 1 : -1;
+				if (inPan("y", eltA, eltB)) {
+					// pan on y axis too
+					gesture->y = (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) ? 1 : -1;
+					return true;
+				}
+				else {
+					// just a pan on z axis
+					gesture->y = 0;
+					return true;
+				}
+			}
+			else {
+				if (inPan("y", eltA, eltB)) {
+					// pan gesture in y direction
+					gesture->gestureCode = PAN;
+					gesture->x = 0;
+					gesture->y = (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) ? 1 : -1;
+					gesture->z = 0;
+					return true;
+				}
+				else {
+					// no gesture
+					return false;
+				}
+			}
+		}
+	}
+	else {
+		// we might have a rotate
+		if (gyroscopeStable("x", eltA, eltB)) {
+			if (gyroscopeStable("y", eltA, eltB)) {
+				if (gyroscopeStable("z", eltA, eltB)) {
+					// all stable - code shouldnt get here, but this means we dont have a gesture
+					return false;
+				}
+				else {
+					// unstable axis is z (3rd gyroscope axis)
+					gesture->gestureCode = ROTATE;
+					gesture->x = 0;
+					gesture->y = 0;
+					gesture->z = sign(eltA.gyroscope[2]);
+					return true;
+				}
+			}
+			else {
+				// at least y is unstable
+				gesture->gestureCode = ROTATE;
+				gesture->x = 0;
+				gesture->y = sign(eltA.gyroscope[1]);
+				if (gyroscopeStable("z", eltA, eltB)) {
+					// just y is unstable
+					gesture->z = 0;
+					return true;
+				}
+				else {
+					// unstable axis is also z (3rd gyroscope axis)
+					gesture->z = sign(eltA.gyroscope[2]);
+					return true;
+				}
+			}
+		}
+		else {
+			// at least x is unstable (we have a rotate gesture)
+			gesture->gestureCode = ROTATE;
+			gesture->x = sign(eltA.gyroscope[0]);
+			if (gyroscopeStable("y", eltA, eltB)) {
+				// y is stable
+				gesture->y = 0;
+				if (gyroscopeStable("z", eltA, eltB)) {
+					gesture->z = 0;
+					return true;
+				}
+				else {
+					// z is also unstable
+					gesture->z = sign(eltA.gyroscope[2]);
+					return true;
+				}
+			}
+			else {
+				// y is also unstable
+				gesture->y = sign(eltA.gyroscope[1]);
+				if (gyroscopeStable("z", eltA, eltB)) {
+					gesture->z = 0;
+					return true;
+				}
+				else {
+					// all three axes are unstable
+					gesture->z = sign(eltA.gyroscope[2]);
+					return true;
+				}
+			}
+		}
+	}
+
+
+
+	/* first pass on decision tree - this just goes down to the right
 	// decide rotates first
 	// rotate clockwise puts gyroscope x > 250, and the other two axes should be less than 100
 	if (eltA.gyroscope[0] > 250 &&  eltB.gyroscope[0] > 250 
@@ -325,7 +451,7 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 		gesture->y = 0;
 		gesture->z = 0;
 		return true;
-	}
+	}*/
 	
 	// nothing registered, so return false
 	return false;
@@ -333,6 +459,73 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 
 bool closeTo(float a, float b) {
 	return (abs(a - b) < 0.2);
+}
+
+int sign(int x) {
+	if (x < 0) return -1;
+	return 1;
+}
+
+bool gyroscopeStable(const char* axes, SensorInfo eltA, SensorInfo eltB) {
+	if (strcmp(axes, "any") == 0) {
+		return abs(eltA.gyroscope[0]) < stableAxis
+			&& abs(eltA.gyroscope[1]) < stableAxis
+			&& abs(eltA.gyroscope[2]) < stableAxis
+			&& abs(eltB.gyroscope[0]) < stableAxis
+			&& abs(eltB.gyroscope[1]) < stableAxis
+			&& abs(eltB.gyroscope[2]) < stableAxis;
+	}
+	else if (strcmp(axes, "x")) {
+		return abs(eltA.gyroscope[0]) < stableAxis
+			&& abs(eltB.gyroscope[0]) < stableAxis;
+	}
+	else if (strcmp(axes, "y")) {
+		return abs(eltA.gyroscope[1]) < stableAxis
+			&& abs(eltB.gyroscope[1]) < stableAxis;
+	}
+	else if (strcmp(axes, "z")) {
+		return abs(eltA.gyroscope[2]) < stableAxis
+			&& abs(eltB.gyroscope[2]) < stableAxis;
+	}
+	else {
+		return true;
+	}
+}
+
+// returns true if accelerometer is in unit vector position (0,0,1)
+bool accelerometerStable(SensorInfo eltA, SensorInfo eltB) {
+	return (closeTo(eltA.accelerometer[0], 0) && closeTo(eltA.accelerometer[1], 0) && closeTo(eltA.accelerometer[2], 1)
+		&& closeTo(eltB.accelerometer[0], 0) && closeTo(eltB.accelerometer[1], 0) && closeTo(eltB.accelerometer[2], 1));
+}
+
+// returns true if in pan for axis provided
+// axis can be Z or Y
+bool inPan(const char* axis, SensorInfo eltA, SensorInfo eltB) {
+	if (strcmp(axis, "z") == 0) {
+		if (eltA.accelerometer[2] > accelerometerUpperThreshZ || eltB.accelerometer[2] > accelerometerUpperThreshZ) {
+			return true;
+		}
+		else if (eltA.accelerometer[2] < accelerometerLowerThreshZ || eltB.accelerometer[2] < accelerometerLowerThreshZ) {
+			return true;
+		}
+		else {
+			return false;
+		}
+	}
+	else if (strcmp(axis, "y") == 0) {
+		if (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) {
+			return true;
+		}
+		else if (eltA.accelerometer[1] < accelerometerLowerThreshY || eltB.accelerometer[1] < accelerometerLowerThreshY) {
+			return true;
+		}
+		else {
+			return false;
+		}
+	}
+	else {
+		return false;
+	}
 }
 
 
