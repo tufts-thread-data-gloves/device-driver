@@ -53,6 +53,7 @@ public:
 private:
 	bool calibrationSet;
 	bool inGesture;
+	int cyclesSinceLastGesture;
 	CalibrationInfo calibrationInfo;
 	HANDLE* heapPtr;
 	boost::circular_buffer<SensorInfo> *timeSeriesData;

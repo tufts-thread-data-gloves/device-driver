@@ -11,7 +11,12 @@ using namespace std;
 const float fingerOneThresh = 0.4035;
 const float fingerTwoThresh = 0.4;
 const float fingerThreeThresh = 0.38;
-const float stableAxis = 185;
+const float stablePosAxisX = 300;
+const float stableNegAxisX = -300;
+const float stablePosAxisY = 225;
+const float stableNegAxisY = -200;
+const float stablePosAxisZ = 180;
+const float stableNegAxisZ = -150;
 const float accelerometerUpperThreshZ = 1.3;
 const float accelerometerLowerThreshZ = 0.6;
 const float accelerometerUpperThreshY = -0.1;
@@ -41,6 +46,8 @@ GestureRecognizer::GestureRecognizer(HANDLE *heapPtr) {
 	// Initialize thread that is constantly recording data and timestamps
 	std::thread IORecordingThread(&GestureRecognizer::IORecordingThreadFunc, this);
 	IORecordingThread.detach();
+
+	cyclesSinceLastGesture = -1; // -1 is default value; it is reset to this each time the fist opens. If a gesture is made, it is a positive count of number of cycles since then.
 }
 
 GestureRecognizer::~GestureRecognizer() {
@@ -68,18 +75,26 @@ Gesture *GestureRecognizer::recognize() {
 	if (calibrationSet) {
 		// are we in a gesture? If so, see if we can determine the gesture or if it has ended, if not check if we have started a gesture
 		if (inGesture) {
+			// this is called every two cycles, so we add 2 to our cycles since last gesture variable if it is not a -1
+			if (cyclesSinceLastGesture != -1) cyclesSinceLastGesture += 2;
+
 			// check if still in gesture - we say the gesture has stopped when at least 
 			// two of the three fingers are not in the fist threshold for two straight timestamps
 			int endIndex = timeSeriesData->end() - timeSeriesData->begin();
 			if (outOfFist(timeSeriesData->at(endIndex - 1), timeSeriesData->at(endIndex - 2))) {
 				inGesture = false;
+				cyclesSinceLastGesture = -1;
 				return NULL;
 			}
 			// still in gesture - determine if we know what type of gesture it is
-			static Gesture g;
-			if (decideGesture(timeSeriesData->at(endIndex - 1), timeSeriesData->at(endIndex - 2), &g)) {
-				return &g;
-			} 
+			// we do this only if we havent seen in gesture while the fist has been closed (-1 value) or if it has been 4 cycles
+			if (cyclesSinceLastGesture == -1 || cyclesSinceLastGesture >= 8) {
+				static Gesture g;
+				if (decideGesture(timeSeriesData->at(endIndex - 1), timeSeriesData->at(endIndex - 2), &g)) {
+					cyclesSinceLastGesture = 0;
+					return &g;
+				}
+			}
 			return NULL;
 		}
 		else {
@@ -291,9 +306,28 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 				gesture->gestureCode = PAN;
 				gesture->x = 0;
 				gesture->z = (eltA.accelerometer[2] > accelerometerUpperThreshZ || eltB.accelerometer[2] > accelerometerUpperThreshZ) ? 1 : -1;
+				// We want to check if y is pan too - then we decide whether its stronger in the y or z -> we don't want a multidirectional pan gesture
 				if (inPan("y", eltA, eltB)) {
 					// pan on y axis too
+					// which is stronger
+					float strengthZ, strengthY;
 					gesture->y = (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) ? 1 : -1;
+					// strengthZ calculation
+					if (gesture->z > 0)
+						strengthZ = max(eltA.accelerometer[2] - accelerometerUpperThreshZ, eltB.accelerometer[2] - accelerometerUpperThreshZ);
+					else
+						strengthZ = max(abs(eltA.accelerometer[2] - accelerometerLowerThreshZ), abs(eltB.accelerometer[2] - accelerometerLowerThreshZ));
+					// strengthY calculation
+					if (gesture->y > 0)
+						strengthY = max(eltA.accelerometer[1] - accelerometerUpperThreshY, eltB.accelerometer[1] - accelerometerUpperThreshY);
+					else
+						strengthY = max(abs(eltA.accelerometer[1] - accelerometerLowerThreshY), abs(eltB.accelerometer[1] - accelerometerLowerThreshY));
+
+					if (strengthZ > strengthY)
+						gesture->y = 0;
+					else
+						gesture->z = 0;
+
 					return true;
 				}
 				else {
@@ -468,24 +502,24 @@ int sign(int x) {
 
 bool gyroscopeStable(const char* axes, SensorInfo eltA, SensorInfo eltB) {
 	if (strcmp(axes, "any") == 0) {
-		return abs(eltA.gyroscope[0]) < stableAxis
-			&& abs(eltA.gyroscope[1]) < stableAxis
-			&& abs(eltA.gyroscope[2]) < stableAxis
-			&& abs(eltB.gyroscope[0]) < stableAxis
-			&& abs(eltB.gyroscope[1]) < stableAxis
-			&& abs(eltB.gyroscope[2]) < stableAxis;
+		return eltA.gyroscope[0] < stablePosAxisX && eltA.gyroscope[0] > stableNegAxisX
+			&& eltA.gyroscope[1] < stablePosAxisY&& eltA.gyroscope[1] > stableNegAxisY
+			&& eltA.gyroscope[2] < stablePosAxisZ&& eltA.gyroscope[2] > stableNegAxisZ
+			&& eltB.gyroscope[0] < stablePosAxisX&& eltB.gyroscope[0] > stableNegAxisX
+			&& eltB.gyroscope[1] < stablePosAxisY&& eltB.gyroscope[1] > stableNegAxisY
+			&& eltB.gyroscope[2] < stablePosAxisZ&& eltB.gyroscope[2] > stableNegAxisZ;
 	}
 	else if (strcmp(axes, "x")) {
-		return abs(eltA.gyroscope[0]) < stableAxis
-			&& abs(eltB.gyroscope[0]) < stableAxis;
+		return eltA.gyroscope[0] < stablePosAxisX && eltA.gyroscope[0] > stableNegAxisX
+			&& eltB.gyroscope[0] < stablePosAxisX && eltB.gyroscope[0] > stableNegAxisX;
 	}
 	else if (strcmp(axes, "y")) {
-		return abs(eltA.gyroscope[1]) < stableAxis
-			&& abs(eltB.gyroscope[1]) < stableAxis;
+		return eltA.gyroscope[1] < stablePosAxisY && eltA.gyroscope[1] > stableNegAxisY
+			&& eltB.gyroscope[1] < stablePosAxisY && eltB.gyroscope[1] > stableNegAxisY;
 	}
 	else if (strcmp(axes, "z")) {
-		return abs(eltA.gyroscope[2]) < stableAxis
-			&& abs(eltB.gyroscope[2]) < stableAxis;
+		return eltA.gyroscope[2] < stablePosAxisZ && eltA.gyroscope[2] > stableNegAxisZ
+			&& eltB.gyroscope[2] < stablePosAxisZ && eltB.gyroscope[2] > stableNegAxisZ;
 	}
 	else {
 		return true;
