@@ -17,6 +17,10 @@ const float stablePosAxisY = 225;
 const float stableNegAxisY = -200;
 const float stablePosAxisZ = 180;
 const float stableNegAxisZ = -150;
+const float panUpJump = 0.3;
+const float panDownJump = -0.18;
+const float panLeftJump = -0.2;
+const float panRightJump = 0.2;
 const float accelerometerUpperThreshZ = 1.3;
 const float accelerometerLowerThreshZ = 0.6;
 const float accelerometerUpperThreshY = -0.1;
@@ -71,12 +75,10 @@ Gesture *GestureRecognizer::recognize() {
 		return g;
 	}*/
 	// TODO: check if we are calibrated, then perform gesture recognition
-	printf("In recocgnizer, is cal set %d\n", calibrationSet);
 	if (calibrationSet) {
 		// are we in a gesture? If so, see if we can determine the gesture or if it has ended, if not check if we have started a gesture
 		if (inGesture) {
-			// this is called every two cycles, so we add 2 to our cycles since last gesture variable if it is not a -1
-			if (cyclesSinceLastGesture != -1) cyclesSinceLastGesture += 2;
+			if (cyclesSinceLastGesture != -1) cyclesSinceLastGesture += 1;
 
 			// check if still in gesture - we say the gesture has stopped when at least 
 			// two of the three fingers are not in the fist threshold for two straight timestamps
@@ -86,10 +88,12 @@ Gesture *GestureRecognizer::recognize() {
 				cyclesSinceLastGesture = -1;
 				return NULL;
 			}
+			printf("In fist\n");
 			// still in gesture - determine if we know what type of gesture it is
-			// we do this only if we havent seen in gesture while the fist has been closed (-1 value) or if it has been 4 cycles
+			// we do this only if we havent seen in gesture while the fist has been closed (-1 value) or if it has been 8 cycles
 			if (cyclesSinceLastGesture == -1 || cyclesSinceLastGesture >= 8) {
 				static Gesture g;
+				// we pass the current val and previous val into decide gesture everytime
 				if (decideGesture(timeSeriesData->at(endIndex - 1), timeSeriesData->at(endIndex - 2), &g)) {
 					cyclesSinceLastGesture = 0;
 					return &g;
@@ -100,12 +104,6 @@ Gesture *GestureRecognizer::recognize() {
 		else {
 			// check if we are in a gesture (i.e. last two timestamps are above the threshold for the first three fingers)
 			int endIndex = timeSeriesData->end() - timeSeriesData->begin();
-			printf("Fingers 1,2,3 are %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).finger_sensors[0], 
-				timeSeriesData->at(endIndex - 1).finger_sensors[1], timeSeriesData->at(endIndex - 1).finger_sensors[2]);
-			printf("accelerometer is %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).accelerometer[0],
-				timeSeriesData->at(endIndex - 1).accelerometer[1], timeSeriesData->at(endIndex - 1).accelerometer[2]);
-			printf("gyroscope is %4.2f, %4.2f, %4.2f\n", timeSeriesData->at(endIndex - 1).gyroscope[0],
-				timeSeriesData->at(endIndex - 1).gyroscope[1], timeSeriesData->at(endIndex - 1).gyroscope[2]);
 			if (fingersInFist(timeSeriesData->at(endIndex - 1)) && fingersInFist(timeSeriesData->at(endIndex - 2))) {
 				printf("Fingers in fist\n");
 				inGesture = true;
@@ -280,7 +278,7 @@ bool outOfFist(SensorInfo eltA, SensorInfo eltB) {
 	bool fingerOne = eltA.finger_sensors[0] < fingerOneThresh && eltB.finger_sensors[0] < fingerOneThresh;
 	bool fingerTwo = eltA.finger_sensors[1] < fingerTwoThresh && eltB.finger_sensors[1] < fingerTwoThresh;
 	bool fingerThree = eltA.finger_sensors[2] < fingerThreeThresh && eltB.finger_sensors[2] < fingerThreeThresh;
-	return (fingerOne && fingerTwo || fingerOne && fingerThree || fingerTwo && fingerThree); // if two fingers are out of the fist for two straight sensor infos, we return true
+	return (fingerOne && fingerTwo && fingerThree); // if all fingers out for two straight then we return true
 }
 
 /*
@@ -291,7 +289,6 @@ bool outOfFist(SensorInfo eltA, SensorInfo eltB) {
 * Important Note: All gestures must start with a fist, with the palm facing down so the accelerometer has the expected vector measurement.
 */
 bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
-	// second pass on decision tree
 	// decide whether we are in possible rotate or pan first using gyroscope
 	if (gyroscopeStable("any", eltA, eltB)) {
 		if (accelerometerStable(eltA, eltB)) {
@@ -305,13 +302,30 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 				// pan gesture made - at least z axis
 				gesture->gestureCode = PAN;
 				gesture->x = 0;
-				gesture->z = (eltA.accelerometer[2] > accelerometerUpperThreshZ || eltB.accelerometer[2] > accelerometerUpperThreshZ) ? 1 : -1;
+				
+				// determine which way on Z
+				if (eltA.accelerometer[2] - eltB.accelerometer[2] >= panUpJump) {
+					gesture->z = 1;
+				}
+				else if (eltA.accelerometer[2] - eltB.accelerometer[2] <= panDownJump) {
+					gesture->z = -1;
+				}
 				// We want to check if y is pan too - then we decide whether its stronger in the y or z -> we don't want a multidirectional pan gesture
 				if (inPan("y", eltA, eltB)) {
 					// pan on y axis too
 					// which is stronger
 					float strengthZ, strengthY;
 					gesture->y = (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) ? 1 : -1;
+
+					// determine which way on Y - based on jump
+					if (eltA.accelerometer[1] - eltB.accelerometer[1] >= panRightJump) {
+						gesture->y = 1;
+					}
+					else if (eltA.accelerometer[1] - eltB.accelerometer[1] <= panLeftJump) {
+						gesture->y = -1;
+					}
+					
+					
 					// strengthZ calculation
 					if (gesture->z > 0)
 						strengthZ = max(eltA.accelerometer[2] - accelerometerUpperThreshZ, eltB.accelerometer[2] - accelerometerUpperThreshZ);
@@ -341,7 +355,14 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 					// pan gesture in y direction
 					gesture->gestureCode = PAN;
 					gesture->x = 0;
-					gesture->y = (eltA.accelerometer[1] > accelerometerUpperThreshY || eltB.accelerometer[1] > accelerometerUpperThreshY) ? 1 : -1;
+					gesture->y = 0;
+					// determine which way on Y - based on jump
+					if (eltA.accelerometer[1] - eltB.accelerometer[1] >= panRightJump) {
+						gesture->y = 1;
+					}
+					else if (eltA.accelerometer[1] - eltB.accelerometer[1] <= panLeftJump) {
+						gesture->y = -1;
+					}
 					gesture->z = 0;
 					return true;
 				}
@@ -418,74 +439,6 @@ bool decideGesture(SensorInfo eltA, SensorInfo eltB, Gesture *gesture) {
 			}
 		}
 	}
-
-
-
-	/* first pass on decision tree - this just goes down to the right
-	// decide rotates first
-	// rotate clockwise puts gyroscope x > 250, and the other two axes should be less than 100
-	if (eltA.gyroscope[0] > 250 &&  eltB.gyroscope[0] > 250 
-		&& abs(eltA.gyroscope[1]) < 100 && abs(eltA.gyroscope[2]) < 100
-		&& abs(eltB.gyroscope[1]) < 100 && abs(eltB.gyroscope[2]) < 100)
-	{
-		gesture->gestureCode = ROTATE;
-		gesture->x = 0;
-		gesture->y = -1;
-		gesture->z = -1;
-		return true;
-	}
-	// rotate ctrclockwise puts gyroscope x < -250, and the other two axes stay under abs(150)
-	if (eltA.gyroscope[0] < -250 && eltB.gyroscope[0] < -250
-		&& abs(eltA.gyroscope[1]) < 150 && abs(eltA.gyroscope[2]) < 150
-		&& abs(eltB.gyroscope[1]) < 150 && abs(eltB.gyroscope[2]) < 150)
-	{
-		gesture->gestureCode = ROTATE;
-		gesture->x = 0;
-		gesture->y = 1;
-		gesture->z = -1;
-		return true;
-	}
-
-	// then check pans
-
-	// Pan down: either we see a significant jump from 1 down in the z for the accelerometer, or we see two consecutive readings with downward acceleration
-	if ((eltA.accelerometer[2] < 1 && (eltB.accelerometer[2] - eltA.accelerometer[2]) > 0.3) 
-		|| (eltB.accelerometer[2] < 0.4 && eltA.accelerometer[2] < 0.6)) {
-		gesture->gestureCode = PAN;
-		gesture->x = 0;
-		gesture->y = -1;
-		gesture->z = 0;
-		return true;
-	}
-
-	// pan up: either we see a significant jump above 1 up for the z accelerometer, or we see two consectuvie readings above 1.25
-	if ((eltA.accelerometer[2] > 1 && (eltA.accelerometer[2] - eltB.accelerometer[2] > 0.4))
-		|| (eltB.accelerometer[2] > 1.25 && eltA.accelerometer[2] > 1.25)) 
-	{
-		gesture->gestureCode = PAN;
-		gesture->x = 0;
-		gesture->y = 1;
-		gesture->z = 0;
-		return true;
-	}
-
-	// pan left: y should be close to -0.5 to start, then move positive by at least .4
-	if ((closeTo(eltB.accelerometer[1], -0.5) && (eltB.accelerometer[1] - eltA.accelerometer[1] > 0.4))) {
-		gesture->gestureCode = PAN;
-		gesture->x = -1;
-		gesture->y = 0;
-		gesture->z = 0;
-		return true;
-	}
-
-	// pan right: y gets close to -1
-	if ((closeTo(eltB.accelerometer[1], -1)) || (closeTo(eltA.accelerometer[1], -1)) || (eltA.accelerometer[1] < -1) || (eltB.accelerometer[1] < -1)) {
-		gesture->gestureCode = PAN;
-		gesture->x = 1;
-		gesture->y = 0;
-		gesture->z = 0;
-		return true;
-	}*/
 	
 	// nothing registered, so return false
 	return false;
@@ -509,15 +462,15 @@ bool gyroscopeStable(const char* axes, SensorInfo eltA, SensorInfo eltB) {
 			&& eltB.gyroscope[1] < stablePosAxisY&& eltB.gyroscope[1] > stableNegAxisY
 			&& eltB.gyroscope[2] < stablePosAxisZ&& eltB.gyroscope[2] > stableNegAxisZ;
 	}
-	else if (strcmp(axes, "x")) {
+	else if (strcmp(axes, "x") == 0) {
 		return eltA.gyroscope[0] < stablePosAxisX && eltA.gyroscope[0] > stableNegAxisX
 			&& eltB.gyroscope[0] < stablePosAxisX && eltB.gyroscope[0] > stableNegAxisX;
 	}
-	else if (strcmp(axes, "y")) {
+	else if (strcmp(axes, "y") == 0) {
 		return eltA.gyroscope[1] < stablePosAxisY && eltA.gyroscope[1] > stableNegAxisY
 			&& eltB.gyroscope[1] < stablePosAxisY && eltB.gyroscope[1] > stableNegAxisY;
 	}
-	else if (strcmp(axes, "z")) {
+	else if (strcmp(axes, "z") == 0) {
 		return eltA.gyroscope[2] < stablePosAxisZ && eltA.gyroscope[2] > stableNegAxisZ
 			&& eltB.gyroscope[2] < stablePosAxisZ && eltB.gyroscope[2] > stableNegAxisZ;
 	}

@@ -281,15 +281,22 @@ void gestureListener(Gesture *g) {
 	printf("Gesture received! Gesture is %d, with xyz of %d,%d,%d\n", g->gestureCode, g->x, g->y, g->z);
 
 	// make payload
+	// Payload looks like "GestureCode parity:xval,parity:yval,parity:zval"
 	TCHAR buffer[128] = { L'0' };
 	buffer[0] = (int)g->gestureCode + ASCII_NUM_VAL;
 	buffer[1] = ' ';
-	buffer[2] = g->x + ASCII_NUM_VAL;
-	buffer[3] = ',';
-	buffer[4] = g->y + ASCII_NUM_VAL;
+	buffer[2] = (g->x < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[3] = ':';
+	buffer[4] = abs(g->x) + ASCII_NUM_VAL;
 	buffer[5] = ',';
-	buffer[6] = g->z + ASCII_NUM_VAL;
-	const int buf_size = 7 * 2; // since we are using wchar not char
+	buffer[6] = (g->y < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[7] = ':';
+	buffer[8] = abs(g->y) + ASCII_NUM_VAL;
+	buffer[9] = ',';
+	buffer[10] = (g->z < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[11] = ':';
+	buffer[12] = abs(g->z) + ASCII_NUM_VAL;
+	const int buf_size = 13 * 2; // since we are using wchar not char
 	
 	// now send over named pipes
 	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {

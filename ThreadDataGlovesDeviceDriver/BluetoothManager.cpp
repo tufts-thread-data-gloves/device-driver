@@ -184,7 +184,8 @@ concurrency::task<void> connectToGlove(unsigned long long bluetoothAddress, list
 				SensorInfo s = newSensorInfo(accelerometerValues, gyroscopeValues, threadValues, (*recognizer)->getCalibrationInfo());
 				(*recognizer)->addToTimeSeries(s);
 
-				if (timeCount % 2 == 0) {
+				// Need to put things in circular buffer before doing recognize
+				if (timeCount > 2) {
 					Gesture* g = (*recognizer)->recognize();
 					if (g != NULL) c(g); // call callback listener
 				}
