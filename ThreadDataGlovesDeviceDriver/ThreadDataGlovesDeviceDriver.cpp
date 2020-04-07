@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include "BluetoothManager.h"
 #include <iostream>
+#include <fstream>
 #include <future>
 #include <thread>
 #include <vector>
@@ -46,7 +47,7 @@ struct BufferHolder {
 
 // Request codes sent by applications to the device driver over the socket
 enum RequestCodes {
-	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED, IS_GLOVE_CONNECTED
+	HI=1, BYE, BATTERY_LIFE, START_CALIBRATION, END_CALIBRATION, USE_SAVED_CALIBRATION_DATA, IS_CALIBRATED, IS_GLOVE_CONNECTED, START_RECORDING, END_RECORDING=11
 };
 
 // Return codes used by device driver when sending info back to clients
@@ -62,6 +63,9 @@ int sendCodeResponse(SOCKET i, char code, const char *response);
 void calibrate(BluetoothManager* b, CalibrationInfo &result);
 void freeProcListener(SOCKET i);
 void bluetoothErrorHandler();
+void zeroCalibrationStruct();
+bool getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci);
+char* createCalibrationPayload(CalibrationInfo ci);
 
 // global variable which is linked list of structs that contain process name & named pipes used for gesture listening
 vector<ProcListener> listeners;
@@ -71,6 +75,10 @@ HANDLE heap;
 
 // global glove found
 bool gloveFound = false;
+// global glove calibrated structure
+CalibrationStruct globalCalibrationStruct;
+// calibration lock - used to indicate when calibration is done
+mutex calibrationLock;
 
 int main(int argc, char *argv[])
 {
@@ -96,7 +104,7 @@ int main(int argc, char *argv[])
 	// initialize security needed for bluetooth
 	Microsoft::WRL::Wrappers::RoInitializeWrapper initialize(RO_INIT_MULTITHREADED);
 
-	CoInitializeSecurity(
+	auto _ = CoInitializeSecurity(
 		nullptr, // TODO: "O:BAG:BAD:(A;;0x7;;;PS)(A;;0x3;;;SY)(A;;0x7;;;BA)(A;;0x3;;;AC)(A;;0x3;;;LS)(A;;0x3;;;NS)"
 		-1,
 		nullptr,
@@ -110,8 +118,11 @@ int main(int argc, char *argv[])
 	// initialize bluetooth manager
 	BluetoothManager bluetoothMngr(&heap);
 
+	// zero calibration struct to make sure we have a fresh structure to start out with
+	zeroCalibrationStruct();
+
 	// start find glove, pass in listener. When listener called, we are connected with the glove.
-	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+	bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 	
 	// socket server code for interprocess communication
 	// open socket, accept connections, select loop to handle both new connections and requests for communication
@@ -170,10 +181,10 @@ int main(int argc, char *argv[])
 			perror("select");
 		}
 		else if (ret == 0) {
-			printf("Timeout occured\n");
+			//printf("Timeout occured\n");
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -236,6 +247,7 @@ int main(int argc, char *argv[])
 									else {
 										// zero out whole buffer
 										memset(buffers[i].buf, 0, BUFFER_SIZE * 2);
+										buffers[i].size = 0;
 									}
 									if (processRequest(i, request, &bluetoothMngr) == ERROR_RET) {
 										closesocket(i);
@@ -251,7 +263,7 @@ int main(int argc, char *argv[])
 
 			// check if retry find glove was changed to true
 			if (RETRY_FIND_GLOVE) {
-				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound);
+				bluetoothMngr.findGlove((listenCallback)gestureListener, (errorCallback)bluetoothErrorHandler, &gloveFound, &globalCalibrationStruct);
 				RETRY_FIND_GLOVE = false;
 			}
 		}
@@ -265,18 +277,26 @@ int main(int argc, char *argv[])
  * Takes in SensorInfo struct, sends gesture data over all open named pipes.
  */
 void gestureListener(Gesture *g) {
-	printf("Gesture received! \n");
+	printf("IN GESTURE LISTENER\n");
+	printf("Gesture received! Gesture is %d, with xyz of %d,%d,%d\n", g->gestureCode, g->x, g->y, g->z);
 
 	// make payload
+	// Payload looks like "GestureCode parity:xval,parity:yval,parity:zval"
 	TCHAR buffer[128] = { L'0' };
 	buffer[0] = (int)g->gestureCode + ASCII_NUM_VAL;
 	buffer[1] = ' ';
-	buffer[2] = g->x + ASCII_NUM_VAL;
-	buffer[3] = ',';
-	buffer[4] = g->y + ASCII_NUM_VAL;
+	buffer[2] = (g->x < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[3] = ':';
+	buffer[4] = abs(g->x) + ASCII_NUM_VAL;
 	buffer[5] = ',';
-	buffer[6] = g->z + ASCII_NUM_VAL;
-	const int buf_size = 7 * 2; // since we are using wchar not char
+	buffer[6] = (g->y < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[7] = ':';
+	buffer[8] = abs(g->y) + ASCII_NUM_VAL;
+	buffer[9] = ',';
+	buffer[10] = (g->z < 0) ? (1 + ASCII_NUM_VAL) : (0 + ASCII_NUM_VAL);
+	buffer[11] = ':';
+	buffer[12] = abs(g->z) + ASCII_NUM_VAL;
+	const int buf_size = 13 * 2; // since we are using wchar not char
 	
 	// now send over named pipes
 	for (vector<ProcListener>::iterator it = listeners.begin(); it < listeners.end(); it++) {
@@ -296,7 +316,10 @@ void gestureListener(Gesture *g) {
  * Returns: int (ERROR_RET or SUCCESS_RET)
  */
 int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
-	printf("in process request \n");
+	printf("in process request %s\n", requestBytes);
+	uint32_t firstFourBytes;
+	memcpy(&firstFourBytes, requestBytes, 4);
+	printf("first two bytes are, %x", firstFourBytes);
 	printf("code is %d \n", requestBytes[0]);
 	switch (requestBytes[0]) {
 	case HI: {
@@ -343,19 +366,95 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 		break;
 	}
 	case START_CALIBRATION: {
-		// no-op for now
+		// If our glove is connected:
+		// Lock calibration lock, and trigger the boolean value in shared calibration struct global variable and then return success
+		if (gloveFound) {
+			b->calibrationLock.lock();
+			globalCalibrationStruct.calibrationTrigger = true;
+			b->calibrationLock.unlock();
+			printf("Calibration succesfully started\n");
+			sendCodeResponse(i, SUCCESS, "");
+		}
+		else {
+			sendCodeResponse(i, FAILURE, "glove not connected");
+		}
 		break;
 	}
 	case END_CALIBRATION: {
-		// no-op for now
+		printf("About to end calibration \n");
+		// if glove is connected, and calibration has been started, lock calibration lock, trigger boolean value in shared struct
+		// and then wait to regain lock and then send back calibration info
+		if (gloveFound && globalCalibrationStruct.calibrationStarted) {
+			b->calibrationLock.lock();
+			globalCalibrationStruct.calibrationTrigger = true;
+			b->calibrationLock.unlock();
+
+			b->waitingForCalibrationLock.lock(); // when we acquire this lock, we know that the background read loop for bluetooth has received the calibration trigger
+			b->waitingForCalibrationLock.unlock(); // immediately unlock so we can recalibrate at any point
+			b->calibrationLock.lock();
+			// once we have gained the lock we have the calibration info we need to send back in the global calibration struct
+			char* payload = createCalibrationPayload(globalCalibrationStruct.ci);
+			b->calibrationLock.unlock();
+			if (payload == NULL) {
+				// error in the calibration
+				sendCodeResponse(i, FAILURE, "Error calibrating");
+			}
+			else {
+				printf("Calibration set\n");
+				sendCodeResponse(i, SUCCESS, payload);
+				HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, payload);
+			}
+
+		}
+		else {
+			sendCodeResponse(i, FAILURE, "Glove must be connected and calibration must have been started");
+		}
 		break;
 	}
 	case USE_SAVED_CALIBRATION_DATA: {
-		// no-op for now
+		printf("Trying to calibrate with saved calibration data\n");
+		// read filepath from request
+		char filepath[BUFFER_SIZE];
+		strncpy_s(filepath, BUFFER_SIZE, requestBytes + 1, BUFFER_SIZE);
+		for (int i = 0; i < strlen(filepath); i++) {
+			if (filepath[i] == '\n') {
+				filepath[i] = '\0'; // need to remove the newline so that is not in the filepath
+			}
+		}
+
+		// now read calibration info from that file
+		CalibrationInfo* ci = (CalibrationInfo*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(CalibrationInfo));
+		bool calibrationFileRead = getCalibrationInfoFromFile(filepath, ci);
+		printf("After calibration file read function, result was %d\n", calibrationFileRead);
+		if (!calibrationFileRead) {
+			// we got an error trying to read the file, so we won't calibrate, and we will return an error to the client
+			printf("Calibration file not read correctly, sending ERROR back\n");
+			sendCodeResponse(i, FAILURE, "File format not correct");
+			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
+			ci = NULL;
+		}
+		else {
+			// add this to the global calibration struct, and turn the trigger on so that the background thread can use it
+			b->calibrationLock.lock();
+			printf("Saving calibration data, min value 3 is %u \n", ci->minReading[2]);
+			globalCalibrationStruct.ci = *ci;
+			globalCalibrationStruct.calibrationTrigger = true;
+			globalCalibrationStruct.from_saved_file = true;
+			b->calibrationLock.unlock();
+			sendCodeResponse(i, SUCCESS, ""); // send success back
+			HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, ci);
+			ci = NULL;
+		}
 		break;
 	}
 	case IS_CALIBRATED: {
-		// no-op for now
+		printf("Received is calibrated request\n");
+		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
+			sendCodeResponse(i, SUCCESS, "yes");
+		}
+		else {
+			sendCodeResponse(i, SUCCESS, "no");
+		}
 		break;
 	}
 	case IS_GLOVE_CONNECTED: {
@@ -364,6 +463,51 @@ int processRequest(SOCKET i, char *requestBytes, BluetoothManager* b) {
 			sendCodeResponse(i, SUCCESS, "yes");
 		else
 			sendCodeResponse(i, SUCCESS, "no");
+		break;
+	}
+	case START_RECORDING: {
+		printf("In start recording endpoint \n");
+		// This is a temporary endpoint that will be removed once we develop the gestural recognition
+		// This will tell the bluetooth manager to start "recording" our normalized data - given that we are connected and calibrated
+		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
+			if (b->startRecording()) {
+				sendCodeResponse(i, SUCCESS, "");
+			}
+			else {
+				sendCodeResponse(i, FAILURE, "Could not start recording");
+			}
+		}
+		else {
+			sendCodeResponse(i, FAILURE, "Need to be connected and calibrated");
+		}
+		break;
+	}
+	case END_RECORDING: {
+		printf("In end recording endpoint\n");
+		// We expect a payload with a filepath here
+		if (globalCalibrationStruct.gloveCalibrated && gloveFound) {
+			// read filepath from request
+			char filepath[BUFFER_SIZE];
+			strncpy_s(filepath, BUFFER_SIZE, requestBytes + 1, BUFFER_SIZE);
+			for (int i = 0; i < strlen(filepath); i++) {
+				if (filepath[i] == '\n') {
+					filepath[i] = '\0'; // need to remove the newline so that is not in the filepath
+				}
+			}
+
+			printf("Filepath is %s\n", filepath);
+
+			if (b->endRecording(filepath)) {
+				sendCodeResponse(i, SUCCESS, "");
+			}
+			else {
+				sendCodeResponse(i, FAILURE, "Failed to end recording");
+			}
+		}
+		else {
+			sendCodeResponse(i, FAILURE, "Need to be connected and calibrated");
+		}
+		break;
 	}
 	default: break;
 	}
@@ -432,7 +576,7 @@ bool newNamedPipe(string processName, ProcListener *pl) {
 /*
  * sendCodeResponse is used to send a success or error response over the socket to a client
  * Input: SOCKET i (socket to send on), char code (success or error code), const char *response (response to send with the code)
- * Returns: int (ERROR_RET or SUCCESS_RET)
+ * Returns: int (ERROR or SUCCESS)
  */
 int sendCodeResponse(SOCKET i, char code, const char *response) {
 	// construct payload
@@ -457,15 +601,6 @@ int sendCodeResponse(SOCKET i, char code, const char *response) {
 	return SUCCESS_RET;
 }
 
-/* calibrate is used to get calibration values for the glove
- * current NO-OP
- * This is a TODO
- */
-void calibrate(BluetoothManager* b, CalibrationInfo& result) {
-	// Called in thread
-	// TODO: run b->listen() until some notification from main, and then store max and min in result
-}
-
 /*
  * freeProcListener is used to release a namedPipe when a client disconnects
  * Input: SOCKET i (client that disconnected)
@@ -483,12 +618,99 @@ void freeProcListener(SOCKET i) {
 }
 
 /*
- * errorCallback used to pass in to the bluetooth manager - when there is an error in connecting, 
+ * errorCallback used to pass in to the bluetooth manager - when there is an error in connecting,
  * we just try to reconnect
  */
 void bluetoothErrorHandler() {
 	// We set the global variable RETRY_FIND_GLOVE to true to tell our select loop to retry since we don't
 	// have access to the bluetooth manager in this function
 	gloveFound = false;
+	zeroCalibrationStruct();
 	RETRY_FIND_GLOVE = true;
+}
+
+void zeroCalibrationStruct() {
+	globalCalibrationStruct.from_saved_file = false;
+	globalCalibrationStruct.gloveCalibrated = false;
+	globalCalibrationStruct.ci = { {0, 0, 0, 0, 0}, {0, 0, 0 ,0 ,0} };
+	globalCalibrationStruct.calibrationTrigger = false;
+	globalCalibrationStruct.calibrationStarted = false;
+	memset(&(globalCalibrationStruct.savedFilePath[0]), '\0', MAX_FILEPATH_LENGTH);
+}
+
+// Used to read calibration data from a saved file
+// Returns false if bad format file
+bool getCalibrationInfoFromFile(char* filepath, CalibrationInfo* ci) {
+	ifstream infile(filepath);
+
+	if (infile.bad()) {
+		return false;
+	}
+
+	char buf[BUFFER_SIZE];
+	memset(buf, '\0', BUFFER_SIZE);
+	int count = 0;
+	try {
+		// if correctly formatted, first line is space seperated min values, second line is space separated max values
+		/* File should look like:
+		1 2 3 4 5
+		1 2 3 4 5
+		*/
+		infile.getline(buf, BUFFER_SIZE);
+		char* next_token;
+		char* token = strtok_s(buf, " \n", &next_token);
+		while (token != NULL && count < 5) {
+			int threadVal = atoi(token);
+			if (threadVal < 0) {
+				// not a number
+				return false;
+			}
+			ci->minReading[count] = (uint16_t)threadVal;
+			count++;
+			token = strtok_s(buf, " \n", &next_token);
+		}
+
+		// First line was not formatted correctly
+		if (count != 5) {
+			return false;
+		}
+
+		// all of min readings have been read - reset buffer, count and read the next line
+		memset(buf, '\0', BUFFER_SIZE);
+		count = 0;
+		infile.getline(buf, BUFFER_SIZE);
+		token = strtok_s(buf, " \n", &next_token);
+		while (token != NULL && count < 5) {
+			int threadVal = atoi(token);
+			if (threadVal < 0) {
+				// not a number
+				return false;
+			}
+			ci->maxReading[count] = (uint16_t)threadVal;
+			count++;
+			token = strtok_s(buf, " \n", &next_token);
+		}
+
+		// First line was not formatted correctly
+		if (count != 5) {
+			return false;
+		}
+	}
+	catch (std::ifstream::failure e) {
+		return false;
+	}
+}
+
+// Returns the string format to save in a file for a given calibrationinfo struct
+char* createCalibrationPayload(CalibrationInfo ci) {
+	char* payload = (char*)HeapAlloc(heap, HEAP_ZERO_MEMORY, BUFFER_SIZE);
+	// Min readings first, then max
+	if (sprintf_s(payload, BUFFER_SIZE, "%u %u %u %u %u\n%u %u %u %u %u\n\0",
+		ci.minReading[0], ci.minReading[1], ci.minReading[2], ci.minReading[3], ci.minReading[4],
+		ci.maxReading[0], ci.maxReading[1], ci.maxReading[2], ci.maxReading[3], ci.maxReading[4]) < 0) 
+	{
+		HeapFree(heap, HEAP_FREE_CHECKING_ENABLED, payload);
+		return NULL;
+	}
+	return payload;
 }
