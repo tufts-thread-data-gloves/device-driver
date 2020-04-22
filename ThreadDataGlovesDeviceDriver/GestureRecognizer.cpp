@@ -36,10 +36,6 @@ bool gyroscopeStable(const char* axes, SensorInfo eltA, SensorInfo eltB);
 bool accelerometerStable(SensorInfo eltA, SensorInfo eltB);
 bool inPan(const char* axis, SensorInfo eltA, SensorInfo eltB);
 
-/*
-Gesture recognizer is not yet done, for now this class is meant to hold the time series data and record gestures
-*/
-
 std::mutex GestureRecognizer::recordingOnLock;
 std::mutex GestureRecognizer::queueLock;
 
@@ -63,18 +59,6 @@ GestureRecognizer::~GestureRecognizer() {
  * Returns gesture if gesture was recognized, otherwise returns NULL
  */
 Gesture *GestureRecognizer::recognize() {
-	/*// this is mocking finding a gesture for now
-	double random = rand() / double(RAND_MAX);
-	if (random > 0.5) {
-		Gesture *g = (Gesture*)HeapAlloc(*(heapPtr), HEAP_ZERO_MEMORY, sizeof(Gesture));
-		if (g == NULL)
-			return NULL;
-		g->x = 1;
-		g->y = 1;
-		g->z = 1;
-		return g;
-	}*/
-	// TODO: check if we are calibrated, then perform gesture recognition
 	if (calibrationSet) {
 		// are we in a gesture? If so, see if we can determine the gesture or if it has ended, if not check if we have started a gesture
 		if (inGesture) {
