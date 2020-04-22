@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
 	Microsoft::WRL::Wrappers::RoInitializeWrapper initialize(RO_INIT_MULTITHREADED);
 
 	auto _ = CoInitializeSecurity(
-		nullptr, // TODO: "O:BAG:BAD:(A;;0x7;;;PS)(A;;0x3;;;SY)(A;;0x7;;;BA)(A;;0x3;;;AC)(A;;0x3;;;LS)(A;;0x3;;;NS)"
+		nullptr,
 		-1,
 		nullptr,
 		nullptr,
